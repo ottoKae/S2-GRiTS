@@ -6,10 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "s2grits"
 version = "0.2.0"
 description = "Sentinel-2 L2A native-resolution COG downloader and grouped Zarr builder"
-requires-python = ">=3.10"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "numpy",
   "pyarrow",
+  "pyproj",
   "pyyaml",
   "requests",
   "rasterio",
@@ -20,8 +22,17 @@ dependencies = [
   "rich",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+
 [project.scripts]
 s2grits = "s2grits.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100

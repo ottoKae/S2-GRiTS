@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import csv
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import zarr
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from .bands import resolution_metres
+from .bands import resolution_metres, variable_name
 from .catalog import read_catalog
 from .monitor import format_bytes
 from .stac import S2Item
@@ -20,7 +20,10 @@ _logger = logging.getLogger("s2grits")
 
 
 def _zarr_metadata(zarr_path: Path) -> dict:
-    meta_path = zarr_path / "s2grits_metadata.json"
+    meta_path = zarr_path / "s2grits_resume_state.json"
+    legacy_path = zarr_path / "s2grits_metadata.json"
+    if not meta_path.exists() and legacy_path.exists():
+        meta_path = legacy_path
     if not meta_path.exists():
         return {"items": []}
     try:
@@ -63,9 +66,25 @@ def _store_warnings(
                 f"{group_name} resolution attr={actual_resolution}, "
                 f"expected={resolution_metres(group_name)}"
             )
+        for attribute in (
+            "crs",
+            "transform",
+            "width",
+            "height",
+            "grid_id",
+            "grid_name",
+            "grid_version",
+            "processing_signature",
+        ):
+            if group.attrs.get(attribute) is None:
+                warnings.append(f"{group_name} {attribute} attr is missing")
+        if "spatial_ref" not in group:
+            warnings.append(f"{group_name}/spatial_ref is missing")
         for coordinate in ("x", "y"):
             if coordinate not in group:
                 warnings.append(f"{group_name}/{coordinate} is missing")
+            elif group[coordinate].attrs.get("axis") != coordinate.upper():
+                warnings.append(f"{group_name}/{coordinate} CF axis attr is missing")
         if "time" not in group:
             warnings.append(f"{group_name}/time is missing")
         elif int(group["time"].shape[0]) != committed_count:
@@ -74,20 +93,25 @@ def _store_warnings(
                 f"committed={committed_count}"
             )
         for band in bands:
-            if band not in group:
-                warnings.append(f"{group_name}/{band} is missing")
+            variable = variable_name(band)
+            if variable not in group:
+                warnings.append(f"{group_name}/{variable} is missing")
                 continue
-            if int(group[band].shape[0]) != committed_count:
+            if int(group[variable].shape[0]) != committed_count:
                 warnings.append(
-                    f"{group_name}/{band} time length={group[band].shape[0]}, "
+                    f"{group_name}/{variable} time length={group[variable].shape[0]}, "
                     f"committed={committed_count}"
                 )
+            if group[variable].attrs.get("grid_mapping") != "spatial_ref":
+                warnings.append(f"{group_name}/{variable} grid_mapping attr is missing")
     return warnings
 
 
 def audit_outputs(
     *,
     output_root: Path,
+    cache_root: Path,
+    operational_dir: Path,
     expected_by_tile: dict[str, list[S2Item]],
     bands: list[str],
     band_groups: dict[str, list[str]],
@@ -110,7 +134,6 @@ def audit_outputs(
         product_dir = tile_dir / "scenes_L2A_native"
         zarr_path = product_dir / "zarr" / f"s2grits_scenes_{tile}_L2A_native.zarr"
         catalog_path = tile_dir / "catalog.parquet"
-        cache_root = output_root / "_asset_cache"
 
         catalog_ids: set[str] = set()
         if catalog_path.exists():
@@ -196,27 +219,20 @@ def audit_outputs(
             )
 
     report["ok"] = not report["missing"] and not report["warnings"]
-    report_path = output_root / "audit_report.json"
-    tmp_path = report_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, report_path)
-    report["report_path"] = str(report_path)
-
-    retry_path = output_root / "retry_scenes.csv"
+    safe_dataset = "".join(
+        c if c.isalnum() or c in "-_" else "-" for c in output_root.name
+    )
+    retry_path = operational_dir / f"S2-GRiTS__dataset-{safe_dataset}__retry-scenes.parquet"
     if report["missing"]:
-        with retry_path.open("w", encoding="utf-8-sig", newline="") as stream:
-            writer = csv.DictWriter(
-                stream,
-                fieldnames=["tile", "item_id", "datetime", "cloud_cover", "missing"],
-            )
-            writer.writeheader()
-            for row in report["missing"]:
-                writer.writerow({**row, "missing": ",".join(row["missing"])})
+        operational_dir.mkdir(parents=True, exist_ok=True)
+        retry_rows = [
+            {**row, "missing": ",".join(row["missing"])} for row in report["missing"]
+        ]
+        pq.write_table(pa.Table.from_pylist(retry_rows), retry_path)
         report["retry_manifest"] = str(retry_path)
     elif retry_path.exists():
         retry_path.unlink()
 
-    _logger.info("[Audit] report written: %s", report_path)
     _logger.info(
         "[Audit] expected=%d missing=%d warnings=%d ok=%s",
         report["expected_scenes"],

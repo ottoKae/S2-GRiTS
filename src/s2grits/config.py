@@ -56,6 +56,8 @@ def apply_defaults(cfg: dict[str, Any]) -> None:
 
     output = cfg.setdefault("output", {})
     output.setdefault("base_dir", "./outputs")
+    output.setdefault("logs_dir", "../logs")
+    output.setdefault("cache_dir", "../_cache")
     output.setdefault("existing_store", "resume")
     formats = output.setdefault("formats", {})
     formats.setdefault("zarr", True)
@@ -71,7 +73,14 @@ def apply_defaults(cfg: dict[str, Any]) -> None:
     runtime.setdefault("downloader", "auto")
     runtime.setdefault("max_tiles", None)
     runtime.setdefault("max_scenes_per_tile", None)
-    runtime.setdefault("manifest_flush_seconds", 30)
+
+
+def output_path(cfg: dict[str, Any], key: str) -> Path:
+    """Resolve auxiliary output paths relative to the dataset root."""
+    value = Path(str(cfg["output"][key]))
+    if value.is_absolute() or key == "base_dir":
+        return value
+    return Path(str(cfg["output"]["base_dir"])) / value
 
 
 def validate_config(cfg: dict[str, Any]) -> list[str]:
@@ -147,6 +156,9 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     out_dir = (cfg.get("output") or {}).get("base_dir")
     if not out_dir:
         errors.append("output.base_dir is required.")
+    for key in ("logs_dir", "cache_dir"):
+        if not (cfg.get("output") or {}).get(key):
+            errors.append(f"output.{key} is required.")
     if resolution_mode == "native_groups" and bool(
         ((cfg.get("output") or {}).get("formats") or {}).get("cog", False)
     ):

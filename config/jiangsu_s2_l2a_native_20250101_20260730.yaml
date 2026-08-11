@@ -74,6 +74,8 @@ processing:
 
 output:
   base_dir: "E:/JiangSu_S2_native"
+  logs_dir: "../logs"
+  cache_dir: "../_cache"
   existing_store: "resume"
   formats:
     zarr: true
@@ -87,6 +89,5 @@ runtime:
   download_scene_workers: 2
   download_band_workers: 4
   downloader: "requests"
-  manifest_flush_seconds: 30
   max_tiles:
   max_scenes_per_tile:

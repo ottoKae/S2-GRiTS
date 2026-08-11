@@ -49,6 +49,7 @@ def cache_scene_assets(
     item: S2Item,
     bands: list[str],
     cache_dir: Path,
+    lock_dir: Path | None = None,
     max_band_workers: int,
     scene_index: int = 1,
     scene_count: int = 1,
@@ -83,7 +84,7 @@ def cache_scene_assets(
     workers = max(1, min(int(max_band_workers), len(bands)))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"s2-{item.tile_id}") as pool:
         futures = {
-            pool.submit(cache_asset, item.assets[band]["href"], cache_dir, item.id, band): band
+            pool.submit(cache_asset, item.assets[band]["href"], cache_dir, item.id, band, lock_dir): band
             for band in bands
         }
         pending = set(futures)
@@ -142,6 +143,7 @@ def iter_cached_scenes(
     items: list[S2Item],
     bands: list[str],
     cache_dir: Path,
+    lock_dir: Path | None = None,
     max_scene_workers: int,
     max_band_workers: int,
     progress: RunProgress | None = None,
@@ -167,6 +169,7 @@ def iter_cached_scenes(
                 item=item,
                 bands=bands,
                 cache_dir=cache_dir,
+                lock_dir=lock_dir,
                 max_band_workers=max_band_workers,
                 scene_index=scene_order[item.id],
                 scene_count=len(items),

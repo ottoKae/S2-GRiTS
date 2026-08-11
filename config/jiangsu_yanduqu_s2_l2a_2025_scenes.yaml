@@ -66,6 +66,8 @@ processing:
 
 output:
   base_dir: "E:/JiangSu_S2"
+  logs_dir: "../logs"
+  cache_dir: "../_cache"
   existing_store: "resume"
   formats:
     zarr: true

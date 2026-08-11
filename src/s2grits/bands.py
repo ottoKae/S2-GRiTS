@@ -37,6 +37,26 @@ BAND_LABELS = {
     "cloud": "CLD",
 }
 
+# Stable, sensor-physical variable names exposed by Zarr/catalog.  Earth
+# Search asset keys remain the acquisition interface and are deliberately kept
+# separate from this public data contract.
+VARIABLE_NAMES = {
+    "coastal": "coastal",
+    "blue": "blue",
+    "green": "green",
+    "red": "red",
+    "rededge1": "red_edge_1",
+    "rededge2": "red_edge_2",
+    "rededge3": "red_edge_3",
+    "nir": "nir_broad",
+    "nir08": "nir_narrow",
+    "nir09": "water_vapor",
+    "swir16": "swir_1",
+    "swir22": "swir_2",
+    "scl": "scl",
+    "cloud": "cloud_probability",
+}
+
 NATIVE_BANDS = tuple(
     band for group_bands in NATIVE_BAND_GROUPS.values() for band in group_bands
 )
@@ -58,4 +78,18 @@ def resolution_metres(group_name: str) -> int:
 
 
 def display_bands(bands: list[str]) -> str:
-    return ", ".join(f"{BAND_LABELS.get(band, band)}({band})" for band in bands)
+    return ", ".join(
+        f"{BAND_LABELS.get(band, band)}({VARIABLE_NAMES.get(band, band)})" for band in bands
+    )
+
+
+def variable_name(source_asset: str) -> str:
+    """Map an Earth Search asset key to the stable Zarr variable name."""
+    try:
+        return VARIABLE_NAMES[source_asset]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported Sentinel-2 source asset: {source_asset}") from exc
+
+
+def variable_names(source_assets: list[str]) -> list[str]:
+    return [variable_name(source_asset) for source_asset in source_assets]

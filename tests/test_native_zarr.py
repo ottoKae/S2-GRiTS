@@ -13,6 +13,7 @@ from rasterio.transform import from_origin
 from s2grits.audit import _store_warnings
 from s2grits.bands import NATIVE_BANDS, selected_native_groups
 from s2grits.stac import S2Item
+from s2grits.workflow import _catalog_records
 from s2grits.zarr_writer import append_item_to_native_zarr
 
 
@@ -102,10 +103,44 @@ class NativeZarrWriterTest(unittest.TestCase):
             self.assertEqual(root["20m"]["scl"].shape, (2, 6, 6))
             self.assertEqual(root["60m"]["coastal"].shape, (2, 2, 2))
             self.assertEqual(root["20m"].attrs["resampling"], "none")
+            self.assertEqual(root["10m"]["time"].dtype, np.dtype("datetime64[ns]"))
+            self.assertEqual(root["10m"].attrs["grid_version"], 1)
+            self.assertEqual(len(root["10m"].attrs["grid_id"]), 12)
+            self.assertEqual(root["10m"].attrs["grid_name"], "50RPV_native_10m")
+            self.assertIn("spatial_ref", root["10m"])
+            self.assertEqual(root["10m"]["blue"].attrs["grid_mapping"], "spatial_ref")
+            self.assertEqual(root["10m"]["blue"].attrs["source_band"], "B02")
+            self.assertEqual(root["10m"]["nir_broad"].attrs["source_band"], "B08")
+            self.assertEqual(root["20m"]["nir_narrow"].attrs["source_band"], "B8A")
+            self.assertIn("swir_1", root["20m"])
+            self.assertIn("cloud_probability", root["20m"])
+            self.assertTrue((store / "s2grits_resume_state.json").exists())
+            self.assertFalse((store / "s2grits_metadata.json").exists())
+            self.assertEqual(root["10m"]["x"].attrs["axis"], "X")
+            self.assertEqual(root["10m"]["y"].attrs["axis"], "Y")
             dataset_10m = xr.open_zarr(store, group="10m", consolidated=False)
             self.assertEqual(dataset_10m.sizes, {"time": 2, "y": 12, "x": 12})
             self.assertIn("blue", dataset_10m.data_vars)
             self.assertEqual(_store_warnings(store, groups, 2), [])
+            records = _catalog_records(
+                item=item("scene-2", "2025-01-11T00:00:00Z"),
+                band_groups=groups,
+                zarr_path=store,
+                preview_path=None,
+                output_root=tmp,
+                stac_api="https://earth-search.aws.element84.com/v1",
+                provider="Element 84 Earth Search / AWS Open Data",
+            )
+            self.assertEqual(len(records), 3)
+            self.assertEqual({record["zarr_group"] for record in records}, {"10m", "20m", "60m"})
+            self.assertTrue(all(record["zarr_path"] == "native.zarr" for record in records))
+            self.assertEqual(
+                {record["grid_id"] for record in records},
+                {root[name].attrs["grid_id"] for name in groups},
+            )
+            records_20m = next(record for record in records if record["zarr_group"] == "20m")
+            self.assertIn("nir_narrow", records_20m["bands"])
+            self.assertNotIn("rededge1", records_20m["bands"])
 
 
 if __name__ == "__main__":

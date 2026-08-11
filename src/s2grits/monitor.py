@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -282,12 +283,14 @@ def phase_timer(logger: logging.Logger, name: str, **fields):
         )
 
 
-def setup_logger(output_root: Path, config_path: str | Path) -> logging.Logger:
-    log_dir = output_root / "logs"
+def setup_logger(log_dir: Path, dataset_name: str) -> logging.Logger:
     log_dir.mkdir(parents=True, exist_ok=True)
-    config_stem = Path(config_path).stem
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"s2grits_{config_stem}_{stamp}.log"
+    safe_dataset = "".join(c if c.isalnum() or c in "-_" else "-" for c in dataset_name)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = log_dir / (
+        f"S2-GRiTS__dataset-{safe_dataset}__workflow-scenes-L2A-native"
+        f"__started-{stamp}__pid-{os.getpid()}.log"
+    )
 
     logger = logging.getLogger("s2grits")
     logger.setLevel(logging.DEBUG)

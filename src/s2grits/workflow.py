@@ -4,18 +4,17 @@ import json
 import logging
 import os
 import time
-import traceback
-from datetime import datetime, timezone
 from pathlib import Path
+
+import zarr
 
 from .asset_cache import SceneCacheResult, iter_cached_scenes
 from .audit import audit_outputs
-from .bands import display_bands, selected_native_groups
-from .catalog import resync_global_catalog, upsert_records
-from .config import date_intervals, load_config, validate_config
+from .bands import display_bands, selected_native_groups, variable_names
+from .catalog import relative_asset_path, resync_global_catalog, upsert_records
+from .config import date_intervals, load_config, output_path, validate_config
 from .grid import enumerate_mgrs_tiles, roi_bbox
 from .io import download_file, save_thumbnail
-from .manifest import DownloadManifest
 from .monitor import (
     CONSOLE,
     RunProgress,
@@ -42,46 +41,74 @@ def _raw_asset_name(item: S2Item, band: str, href: str) -> str:
     return f"{item.id}_{band}{ext}"
 
 
-def _atomic_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def _catalog_record(
+def _catalog_records(
     *,
     item: S2Item,
-    bands: list[str],
     band_groups: dict[str, list[str]],
     zarr_path: Path | None,
     preview_path: Path | None,
+    output_root: Path,
     stac_api: str,
     provider: str,
-) -> dict:
-    return {
-        "collection_id": "s2grits-scenes-native",
-        "product_type": "scenes",
-        "tile_id": item.tile_id,
-        "item_id": item.id,
-        "datetime": item.datetime,
-        "date": item.dt.date().isoformat(),
-        "cloud_cover": item.cloud_cover,
-        "platform": item.platform,
-        "source_collection": item.collection,
-        "provider": provider,
-        "stac_api": stac_api,
-        "stac_item_url": item.self_href,
-        "bands": json.dumps(bands, ensure_ascii=False),
-        "resolution_groups_json": json.dumps(band_groups, ensure_ascii=False),
-        "declared_size_bytes": scene_declared_size(item, bands),
-        "zarr_path": str(zarr_path) if zarr_path else None,
-        "cog_path": None,
-        "preview_path": str(preview_path) if preview_path else None,
-        "source_assets_json": asset_summary_json(item, bands),
-        "bbox": json.dumps(item.bbox) if item.bbox else None,
-        "geometry_json": json.dumps(item.geometry, ensure_ascii=False) if item.geometry else None,
-    }
+) -> list[dict]:
+    if zarr_path is None:
+        return []
+    root = zarr.open_group(str(zarr_path), mode="r")
+    relative_zarr = relative_asset_path(zarr_path, output_root)
+    relative_preview = relative_asset_path(preview_path, output_root)
+    records = []
+    for group_name, group_bands in band_groups.items():
+        group = root[group_name]
+        attrs = dict(group.attrs)
+        records.append(
+            {
+                "collection_id": "s2grits-scenes-native",
+                "product_type": "scenes",
+                "product_label": f"scenes_L2A_native_{group_name}",
+                "tile_id": item.tile_id,
+                "item_id": item.id,
+                "crs": attrs["crs"],
+                "transform": list(attrs["transform"])[:6],
+                "width": attrs["width"],
+                "height": attrs["height"],
+                "grid_id": attrs["grid_id"],
+                "grid_name": attrs["grid_name"],
+                "grid_version": attrs["grid_version"],
+                "resolution_x": attrs["resolution"][0],
+                "resolution_y": attrs["resolution"][1],
+                "grid_source": attrs["grid_source"],
+                "datetime": item.datetime,
+                "start_datetime": item.datetime,
+                "end_datetime": item.datetime,
+                "month": item.dt.strftime("%Y-%m"),
+                "zarr_path": relative_zarr,
+                "preview_path": relative_preview,
+                "bands": variable_names(group_bands),
+                "processing_level": attrs["processing_level"],
+                "product_variant": f"L2A_native_{group_name}",
+                "processing_signature": attrs["processing_signature"],
+                "processing_variant_json": attrs["processing_variant_json"],
+                "status": "complete",
+                "sensor": "sentinel-2",
+                "platform": item.platform,
+                "source_collection": item.collection,
+                "provider": provider,
+                "stac_api": stac_api,
+                "stac_item_url": item.self_href,
+                "resolution_group": group_name,
+                "zarr_group": group_name,
+                "temporal_semantics": "scene",
+                "spatial_alignment_mode": "native",
+                "cloud_cover": item.cloud_cover,
+                "declared_size_bytes": scene_declared_size(item, group_bands),
+                "source_assets_json": asset_summary_json(item, group_bands),
+                "bbox": json.dumps(item.bbox) if item.bbox else None,
+                "geometry_json": (
+                    json.dumps(item.geometry, ensure_ascii=False) if item.geometry else None
+                ),
+            }
+        )
+    return records
 
 
 def run_scenes_workflow(config_path: str | Path) -> dict:
@@ -93,9 +120,11 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
 
     bands = [str(band) for band in cfg["assets"]["bands"]]
     band_groups = selected_native_groups(bands)
-    output_root = Path(cfg["output"]["base_dir"])
+    output_root = output_path(cfg, "base_dir")
+    log_dir = output_path(cfg, "logs_dir")
+    cache_root = output_path(cfg, "cache_dir")
     output_root.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger(output_root, config_path)
+    logger = setup_logger(log_dir, output_root.name)
     log_path = getattr(logger, "log_path", None)
     chunk_size = int(cfg["runtime"]["chunk_size"])
     configured_downloader = str(cfg["runtime"].get("downloader", "auto")).lower()
@@ -113,18 +142,13 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
     max_scenes = cfg["runtime"].get("max_scenes_per_tile")
     bbox = roi_bbox(cfg)
     intervals = date_intervals(cfg)
-    status_path = output_root / "run_status.json"
-    summary_path = output_root / "run_summary.json"
     expected_by_tile: dict[str, list[S2Item]] = {}
     results: dict[str, dict] = {}
-    manifest = DownloadManifest(
-        output_root,
-        flush_interval_seconds=float(cfg["runtime"].get("manifest_flush_seconds", 30)),
-    )
 
     CONSOLE.rule("S2-GRiTS Native: Scenes Workflow")
     CONSOLE.print(f"Config:              {Path(config_path).resolve()}")
     CONSOLE.print(f"Output:              {output_root}")
+    CONSOLE.print(f"Cache:               {cache_root}")
     CONSOLE.print(f"Collection:          {cfg['source']['collection']}")
     CONSOLE.print(f"Date interval:       {intervals[0].split('/')[0]} / {intervals[-1].split('/')[1]}")
     CONSOLE.print(f"Cloud threshold:     <= {cfg['source']['cloud_cover_max']}%")
@@ -140,30 +164,7 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
     CONSOLE.print(f"Downloader:          {configured_downloader}")
     if log_path:
         CONSOLE.print(f"Log:                 {log_path}")
-    CONSOLE.print(f"Manifest:            {manifest.csv_path}")
     CONSOLE.print()
-
-    def write_status(
-        stage: str,
-        current_tile: str | None = None,
-        current_scene: str | None = None,
-        extra: dict | None = None,
-    ) -> None:
-        value = {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "stage": stage,
-            "current_tile": current_tile,
-            "current_scene": current_scene,
-            "config": str(Path(config_path).resolve()),
-            "output_root": str(output_root),
-            "tiles": tiles,
-            "tile_count": len(tiles),
-            "elapsed_seconds": round(time.perf_counter() - run_started, 3),
-            "results": results,
-        }
-        if extra:
-            value.update(extra)
-        _atomic_json(status_path, value)
 
     logger.info(
         "Starting native scenes workflow: config=%s collection=%s output=%s",
@@ -180,7 +181,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
         cfg["source"]["cloud_cover_max"],
     )
     logger.info("Output policies: existing_store=%s", cfg["output"].get("existing_store", "resume"))
-    write_status("started")
 
     with RunProgress(len(tiles)) as run_progress:
         for tile_index, tile in enumerate(tiles, start=1):
@@ -198,7 +198,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
             logger.info("[tile] START tile=%s index=%d/%d", tile, tile_index, len(tiles))
             logger.info("[1/6] Querying Earth Search tile=%s intervals=%d", tile, len(intervals))
             run_progress.start_query(tile, tile_index, len(intervals))
-            write_status("querying", tile, extra={"tile_index": tile_index})
             tile_items_by_id: dict[str, S2Item] = {}
             query_failed = False
             for interval_index, interval in enumerate(intervals, start=1):
@@ -268,7 +267,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                     ok=ok_tiles,
                     failed=failed_tiles,
                 )
-                write_status("tile_query_failed", tile)
                 continue
 
             declared_total = sum(scene_declared_size(item, bands) or 0 for item in tile_items)
@@ -278,18 +276,8 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 len(tile_items),
                 format_bytes(declared_total if declared_total else None),
             )
-            logger.info("[2/6] Writing download manifest tile=%s scenes=%d", tile, len(tile_items))
+            logger.info("[2/6] Scene inventory ready tile=%s scenes=%d", tile, len(tile_items))
             for scene_index, item in enumerate(tile_items, start=1):
-                manifest.discover(
-                    item=item,
-                    bands=bands,
-                    tile_index=tile_index,
-                    tile_count=len(tiles),
-                    scene_index=scene_index,
-                    scene_count=len(tile_items),
-                    stac_api=stac_api,
-                    provider=provider,
-                )
                 logger.info(
                     "[scene-list] tile=%s scene=%d/%d item=%s datetime=%s cloud=%s "
                     "source=%s declared_size=%s",
@@ -302,15 +290,8 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                     item.collection,
                     format_bytes(scene_declared_size(item, bands)),
                 )
-            manifest.flush_if_due(force=True)
             run_progress.start_tile_scenes(tile, tile_index, len(tile_items))
-            write_status(
-                "manifest_ready",
-                tile,
-                extra={"tile_index": tile_index, "scene_count": len(tile_items)},
-            )
-
-            cache_dir = output_root / "_asset_cache"
+            cache_dir = cache_root
             scene_order = {item.id: index for index, item in enumerate(tile_items, start=1)}
 
             def mark_cache_failure(item: S2Item, cache_result: SceneCacheResult) -> None:
@@ -318,17 +299,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 processed_count += 1
                 message = "; ".join(cache_result.errors) or "asset cache failed"
                 failed.append(f"{item.id}: {message}")
-                manifest.update(
-                    item.id,
-                    event="cache_failed",
-                    status="failed",
-                    current_stage="download_failed",
-                    downloaded_size_bytes=cache_result.bytes_written,
-                    download_seconds=cache_result.elapsed_seconds,
-                    total_seconds=cache_result.elapsed_seconds,
-                    error=message,
-                )
-                manifest.flush_if_due()
                 run_progress.finish_scene(
                     completed_scenes=processed_count,
                     scene_count=len(tile_items),
@@ -359,26 +329,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                     item_id=item.id,
                     band_count=len(bands),
                 )
-                manifest.update(
-                    item.id,
-                    event="cache_complete",
-                    status="processing",
-                    current_stage="zarr",
-                    downloaded_size_bytes=cache_result.bytes_written,
-                    download_seconds=cache_result.elapsed_seconds,
-                    error=None,
-                )
-                write_status(
-                    "scene_processing",
-                    tile,
-                    item.id,
-                    extra={
-                        "tile_index": tile_index,
-                        "scene_index": scene_index,
-                        "scene_count": len(tile_items),
-                        "processed_scenes": processed_count,
-                    },
-                )
                 logger.info(
                     "[scene] START tile=%s tile_index=%d/%d scene=%d/%d item=%s "
                     "datetime=%s cloud=%s cached_size=%s cache_elapsed=%s",
@@ -408,6 +358,7 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                             cache_dir=cache_dir,
                             read_mode=str(cfg["source"].get("read_mode", "local_cache_first")),
                             progress=run_progress,
+                            lock_dir=log_dir / "locks",
                         )
                         zarr_seconds = time.perf_counter() - zarr_started
                         logger.info(
@@ -458,30 +409,20 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                                     timeout=float(cfg["source"]["request_timeout_seconds"]),
                                 )
 
-                    record = _catalog_record(
+                    records = _catalog_records(
                         item=item,
-                        bands=bands,
                         band_groups=band_groups,
                         zarr_path=zarr_path if formats.get("zarr", True) else None,
                         preview_path=preview_path,
+                        output_root=output_root,
                         stac_api=stac_api,
                         provider=provider,
                     )
-                    upsert_records(tile_dir / "catalog.parquet", [record])
-                    scene_elapsed = time.perf_counter() - scene_started
-                    manifest.update(
-                        item.id,
-                        event="scene_complete",
-                        status="complete",
-                        current_stage="complete",
-                        zarr_seconds=zarr_seconds,
-                        preview_seconds=preview_seconds,
-                        total_seconds=cache_result.elapsed_seconds + scene_elapsed,
-                        zarr_path=str(zarr_path) if formats.get("zarr", True) else None,
-                        preview_path=str(preview_path) if preview_path else None,
-                        error=None,
+                    upsert_records(
+                        tile_dir / "catalog.parquet", records,
+                        lock_path=log_dir / "locks" / "catalog" / f"{tile}.lock",
                     )
-                    manifest.flush_if_due()
+                    scene_elapsed = time.perf_counter() - scene_started
                     run_progress.finish_scene(
                         completed_scenes=processed_count,
                         scene_count=len(tile_items),
@@ -509,22 +450,7 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                         format_duration(time.perf_counter() - run_started),
                     )
                 except Exception as exc:
-                    error_text = f"{exc}\n{traceback.format_exc()}"
-                    failed.append(f"{item.id}: {error_text}")
-                    manifest.update(
-                        item.id,
-                        event="scene_failed",
-                        status="failed",
-                        current_stage="processing_failed",
-                        zarr_seconds=zarr_seconds,
-                        preview_seconds=preview_seconds,
-                        total_seconds=cache_result.elapsed_seconds
-                        + (time.perf_counter() - scene_started),
-                        zarr_path=str(zarr_path),
-                        preview_path=str(preview_path) if preview_path else None,
-                        error=str(exc),
-                    )
-                    manifest.flush_if_due(force=True)
+                    failed.append(f"{item.id}: {exc}")
                     run_progress.finish_scene(
                         completed_scenes=processed_count,
                         scene_count=len(tile_items),
@@ -545,11 +471,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 cfg["runtime"].get("download_scene_workers", 2),
                 cfg["runtime"].get("download_band_workers", 4),
             )
-            write_status(
-                "downloading",
-                tile,
-                extra={"tile_index": tile_index, "scene_count": len(tile_items)},
-            )
 
             ready: dict[int, tuple[S2Item, SceneCacheResult]] = {}
             next_scene_index = 1
@@ -557,6 +478,7 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 items=tile_items,
                 bands=bands,
                 cache_dir=cache_dir,
+                lock_dir=log_dir / "locks",
                 max_scene_workers=int(cfg["runtime"].get("download_scene_workers", 2)),
                 max_band_workers=int(cfg["runtime"].get("download_band_workers", 4)),
                 progress=run_progress,
@@ -578,9 +500,8 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 "failed": failed,
                 "cached_size_bytes": cache_size,
                 "tile_dir": str(tile_dir),
-                "zarr_path": str(zarr_path),
+                "zarr_path": relative_asset_path(zarr_path, output_root),
             }
-            manifest.flush_if_due(force=True)
             ok_tiles = sum(1 for result in results.values() if result.get("status") == "success")
             failed_tiles = len(results) - ok_tiles
             run_progress.finish_tile(
@@ -603,15 +524,18 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 format_duration(time.perf_counter() - tile_started),
                 format_duration(time.perf_counter() - run_started),
             )
-            write_status("tile_done", tile)
 
         run_progress.set_final_stage("[6/6] catalog resync and audit")
         logger.info("[6/6] Global catalog resync START")
-        global_catalog = resync_global_catalog(output_root)
+        global_catalog = resync_global_catalog(
+            output_root, lock_path=log_dir / "locks" / "catalog" / "global.lock"
+        )
         logger.info("[6/6] Global catalog resync END path=%s", global_catalog)
         logger.info("[6/6] Output audit START")
         audit_report = audit_outputs(
             output_root=output_root,
+            cache_root=cache_root,
+            operational_dir=log_dir,
             expected_by_tile=expected_by_tile,
             bands=bands,
             band_groups=band_groups,
@@ -625,8 +549,6 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                 f"Workflow failed before complete inventory for tiles: {', '.join(failed_workflow_tiles)}"
             )
             audit_report["ok"] = False
-            _atomic_json(Path(audit_report["report_path"]), audit_report)
-        manifest.flush_if_due(force=True)
         run_progress.set_final_stage(
             f"complete | missing {len(audit_report.get('missing', []))} | "
             f"warnings {len(audit_report.get('warnings', []))}"
@@ -638,14 +560,10 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
         "tiles": tiles,
         "n_items": sum(int(value.get("items_found", 0)) for value in results.values()),
         "global_catalog": str(global_catalog) if global_catalog else None,
-        "download_manifest_csv": str(manifest.csv_path),
-        "download_manifest_parquet": str(manifest.parquet_path),
         "audit_report": audit_report,
         "elapsed_seconds": round(time.perf_counter() - run_started, 3),
         "results": results,
     }
-    _atomic_json(summary_path, summary)
-    write_status("complete", extra={"audit_report": audit_report, "summary_path": str(summary_path)})
     logger.info(
         "S2 native scenes workflow complete scenes=%d elapsed=%s missing=%d warnings=%d",
         summary["n_items"],

@@ -49,6 +49,8 @@ processing:
 
 output:
   base_dir: "E:/JiangSu_S2_native_pilot"
+  logs_dir: "../logs"
+  cache_dir: "../_cache"
   existing_store: "resume"
   formats:
     zarr: true
@@ -62,6 +64,5 @@ runtime:
   download_scene_workers: 1
   download_band_workers: 4
   downloader: "requests"
-  manifest_flush_seconds: 5
   max_tiles: 1
   max_scenes_per_tile: 1

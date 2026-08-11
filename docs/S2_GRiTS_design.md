@@ -27,8 +27,8 @@ source:
   read_mode: "local_cache_first"
 ```
 
-For each scene, selected band COGs are downloaded to `_asset_cache`, verified,
-and then read locally into Zarr. This is more stable than issuing thousands of
+For each scene, selected band COGs are downloaded to the configurable external
+`output.cache_dir`, verified, and then read locally into Zarr. This is more stable than issuing thousands of
 HTTP range requests directly against remote COGs.
 
 The cache stage follows the HLS-GRiTS scene downloader pattern:

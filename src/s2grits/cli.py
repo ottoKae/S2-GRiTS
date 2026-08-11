@@ -10,7 +10,7 @@ import requests
 
 from .__version__ import __version__
 from .bands import display_bands, selected_native_groups
-from .config import date_intervals, load_config, validate_config
+from .config import date_intervals, load_config, output_path, validate_config
 from .grid import enumerate_mgrs_tiles, roi_bbox
 from .workflow import run_scenes_workflow
 
@@ -23,6 +23,8 @@ def cmd_doctor(args) -> None:
     print(f"Config: {Path(args.config).resolve()}")
     print(f"Workflow: {cfg.get('workflow')}")
     print(f"Output: {cfg['output']['base_dir']}")
+    print(f"Logs: {cfg['output']['logs_dir']}")
+    print(f"Cache: {cfg['output']['cache_dir']}")
     print(f"Collection: {cfg['source']['collection']}")
     intervals = date_intervals(cfg)
     if len(intervals) == 1:
@@ -44,15 +46,16 @@ def cmd_doctor(args) -> None:
     except Exception as exc:
         errors.append(f"MGRS enumeration failed: {exc}")
 
-    output_root = Path(cfg["output"]["base_dir"])
-    try:
-        output_root.mkdir(parents=True, exist_ok=True)
-        probe = output_root / ".s2grits_write_probe"
-        probe.write_text("ok", encoding="ascii")
-        probe.unlink()
-        print(f"Output writable: OK ({output_root})")
-    except Exception as exc:
-        errors.append(f"Output directory is not writable: {exc}")
+    for label, key in (("Output", "base_dir"), ("Logs", "logs_dir"), ("Cache", "cache_dir")):
+        directory = output_path(cfg, key)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            probe = directory / ".s2grits_write_probe"
+            probe.write_text("ok", encoding="ascii")
+            probe.unlink()
+            print(f"{label} writable: OK ({directory})")
+        except Exception as exc:
+            errors.append(f"{label} directory is not writable: {exc}")
 
     try:
         import shutil

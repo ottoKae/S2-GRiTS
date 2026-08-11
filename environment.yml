@@ -1,0 +1,32 @@
+name: py312_s2grits
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  # 与 S1-GRiTS 保持同一 CPython 小版本，避免 GDAL/rasterio ABI 漂移。
+  - python=3.12
+  - pip
+
+  # 地理空间与数组栈优先使用 conda-forge 二进制包。
+  - gdal
+  - rasterio
+  - pyproj
+  - shapely
+  - pyshp
+  - numpy
+  - xarray
+  - zarr>=3
+  - pyarrow
+
+  # 网络、配置与运行时工具。
+  - requests
+  - urllib3
+  - pyyaml
+  - tqdm
+  - rich
+
+  # 验证工具。
+  - pytest
+
+  # 创建环境后，从仓库根目录执行：python -m pip install -e .

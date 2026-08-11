@@ -16,9 +16,17 @@ import requests
 import zarr
 from rasterio.windows import Window
 
-from .bands import BAND_LABELS, resolution_metres, selected_native_groups
+from .bands import BAND_LABELS, resolution_metres, selected_native_groups, variable_name
+from .locking import InterProcessLock
+from .canonical_catalog_schema import (
+    GRID_ID_VERSION,
+    format_grid_name,
+    make_grid_id,
+    make_processing_signature,
+)
 from .monitor import RunProgress, format_bytes, format_duration, format_rate
 from .stac import S2Item
+from .zarr_cf import add_cf_grid_mapping
 
 
 _thread_local = threading.local()
@@ -49,11 +57,14 @@ def _get_session() -> requests.Session:
 
 
 def _metadata_path(zarr_path: Path) -> Path:
-    return zarr_path / "s2grits_metadata.json"
+    return zarr_path / "s2grits_resume_state.json"
 
 
 def _load_metadata(zarr_path: Path) -> dict:
     path = _metadata_path(zarr_path)
+    legacy_path = zarr_path / "s2grits_metadata.json"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return {"items": []}
@@ -67,7 +78,7 @@ def _save_metadata(zarr_path: Path, metadata: dict) -> None:
 
 
 def _time64(value: str) -> np.datetime64:
-    return np.datetime64(value.replace("Z", "").replace("+00:00", ""), "ms")
+    return np.datetime64(value.replace("Z", "").replace("+00:00", ""), "ns")
 
 
 def _band_metadata(asset: dict) -> dict:
@@ -230,7 +241,7 @@ def _cache_asset_with_requests(href: str, tmp: Path, item_id: str, band: str) ->
                     last_report = now
 
 
-def cache_asset(href: str, cache_dir: Path, item_id: str, band: str) -> Path:
+def _cache_asset_unlocked(href: str, cache_dir: Path, item_id: str, band: str) -> Path:
     scheme = urlparse(str(href)).scheme.lower()
     if scheme not in {"http", "https"}:
         raise ValueError(f"Unsupported asset URL scheme for band={band}: {href}")
@@ -311,6 +322,16 @@ def cache_asset(href: str, cache_dir: Path, item_id: str, band: str) -> Path:
     raise RuntimeError(f"Failed to cache band={band}, url={href}. Last error: {last_exc}") from last_exc
 
 
+def cache_asset(
+    href: str, cache_dir: Path, item_id: str, band: str, lock_dir: Path | None = None
+) -> Path:
+    if lock_dir is None:
+        return _cache_asset_unlocked(href, cache_dir, item_id, band)
+    lock = lock_dir / "cache" / _safe_file_token(item_id) / f"{_safe_file_token(band)}.lock"
+    with InterProcessLock(lock):
+        return _cache_asset_unlocked(href, cache_dir, item_id, band)
+
+
 def _assert_raster_opens(path: str | Path, band: str) -> None:
     try:
         with rasterio.open(str(path)) as ds:
@@ -387,6 +408,27 @@ def _init_resolution_group(
     width = int(reference["width"])
     transform = reference["transform"]
     crs = reference["crs"]
+    crs_string = crs.to_string() if crs else None
+    if crs_string is None:
+        raise ValueError(f"Native group {group_name} has no CRS.")
+    transform_values = [float(value) for value in list(transform)[:6]]
+    resolution = [abs(transform_values[0]), abs(transform_values[4])]
+    grid_id = make_grid_id(
+        item.tile_id,
+        crs_string,
+        transform_values,
+        width,
+        height,
+        resolution=resolution,
+    )
+    processing_values = {
+        "assets.resolution_mode": "native_groups",
+        "assets.resampling": "none",
+        "processing.cloud_mask.enabled": False,
+        "resolution_group": group_name,
+        "bands": [variable_name(band) for band in bands],
+    }
+    processing_signature = make_processing_signature(processing_values)
     expected_signature = _profile_signature(reference)
     expected_signature_json = json.dumps(expected_signature, ensure_ascii=True)
 
@@ -413,7 +455,7 @@ def _init_resolution_group(
             "time",
             shape=(0,),
             chunks=(1024,),
-            dtype="datetime64[ms]",
+            dtype="datetime64[ns]",
             dimension_names=["time"],
         )
         time_array.attrs["_ARRAY_DIMENSIONS"] = ["time"]
@@ -421,18 +463,33 @@ def _init_resolution_group(
     group.attrs.update(
         {
             "resolution_metres": resolution_metres(group_name),
-            "crs": crs.to_string() if crs else None,
-            "transform": [float(value) for value in list(transform)[:6]],
+            "crs": crs_string,
+            "transform": transform_values,
             "height": height,
             "width": width,
             "grid_signature": expected_signature_json,
+            "grid_id": grid_id,
+            "grid_name": format_grid_name(item.tile_id, transform_values, crs_string),
+            "grid_version": GRID_ID_VERSION,
+            "resolution": resolution,
+            "grid_source": "sentinel-2-c1-l2a-native",
+            "product_type": "scenes",
+            "product_label": f"scenes_L2A_native_{group_name}",
+            "processing_level": "L2A",
+            "processing_signature": processing_signature,
+            "processing_variant_json": json.dumps(
+                processing_values, sort_keys=True, ensure_ascii=True
+            ),
+            "time_varying": True,
+            "array_dims": ["time", "y", "x"],
             "resampling": "none",
         }
     )
     for band in bands:
-        if band not in group:
+        variable = variable_name(band)
+        if variable not in group:
             array = group.create_array(
-                band,
+                variable,
                 shape=(0, height, width),
                 chunks=(1, min(chunk_size, height), min(chunk_size, width)),
                 dtype=_band_dtype(item.assets[band]),
@@ -442,16 +499,20 @@ def _init_resolution_group(
             array.attrs.update(
                 {
                     "_ARRAY_DIMENSIONS": ["time", "y", "x"],
-                    "sentinel2_band": BAND_LABELS.get(band, band),
-                    "earth_search_asset": band,
+                    "source_band": BAND_LABELS.get(band, band),
+                    "source_asset": band,
+                    "grid_mapping": "spatial_ref",
                     **_band_metadata(item.assets[band]),
                 }
             )
-        elif tuple(group[band].shape[1:]) != (height, width):
+        elif tuple(group[variable].shape[1:]) != (height, width):
             raise ValueError(
-                f"Existing Zarr {group_name}/{band} shape {group[band].shape[1:]} "
+                f"Existing Zarr {group_name}/{variable} shape "
+                f"{group[variable].shape[1:]} "
                 f"does not match source grid {(height, width)}."
             )
+    if "spatial_ref" not in group:
+        add_cf_grid_mapping(group, crs_string)
     return group
 
 
@@ -465,8 +526,9 @@ def _resize_native_arrays(root, band_groups: dict[str, list[str]], length: int) 
         if "time" in group:
             group["time"].resize((length,))
         for band in bands:
-            if band in group:
-                array = group[band]
+            variable = variable_name(band)
+            if variable in group:
+                array = group[variable]
                 array.resize((length, array.shape[1], array.shape[2]))
 
 
@@ -490,7 +552,8 @@ def _write_native_band(
     with rasterio.open(source_str) as src:
         _validate_native_grid(src, reference, band, resolution)
         windows = list(_window_iter(src.width, src.height, chunk_size))
-        target = group[band]
+        variable = variable_name(band)
+        target = group[variable]
         next_log_fraction = 0.25
         for window_index, window in enumerate(windows, start=1):
             data = _read_window_with_retry(src, band, source_str, window, retries=read_retries)
@@ -507,7 +570,7 @@ def _write_native_band(
                     completed_bands=completed_bands + fraction,
                     band_count=total_bands,
                     detail=(
-                        f"Zarr {group_name}/{BAND_LABELS.get(band, band)} "
+                        f"Zarr {group_name}/{variable} "
                         f"chunks {window_index}/{len(windows)}"
                     ),
                 )
@@ -529,7 +592,7 @@ def _write_native_band(
     )
 
 
-def append_item_to_native_zarr(
+def _append_item_to_native_zarr_unlocked(
     *,
     item: S2Item,
     bands: list[str],
@@ -561,6 +624,8 @@ def append_item_to_native_zarr(
             "tile_id": item.tile_id,
             "resolution_mode": "native_groups",
             "resolution_groups": list(band_groups),
+            "product_type": "scenes",
+            "time_varying": True,
         }
     )
     if "time" not in root:
@@ -568,7 +633,7 @@ def append_item_to_native_zarr(
             "time",
             shape=(0,),
             chunks=(1024,),
-            dtype="datetime64[ms]",
+            dtype="datetime64[ns]",
             dimension_names=["time"],
         )
         time_array.attrs["_ARRAY_DIMENSIONS"] = ["time"]
@@ -595,7 +660,7 @@ def append_item_to_native_zarr(
         group = groups[group_name]
         reference = references[group_name]
         for band in group_bands:
-            array = group[band]
+            array = group[variable_name(band)]
             array.resize((t_index + 1, reference["height"], reference["width"]))
 
     completed_bands = 0
@@ -660,6 +725,27 @@ def append_item_to_native_zarr(
         )
         raise
     return True
+
+
+def append_item_to_native_zarr(
+    *, item: S2Item, bands: list[str], zarr_path: Path, chunk_size: int,
+    read_retries: int = 4, cache_dir: Path | None = None,
+    read_mode: str = "local_cache_first", progress: RunProgress | None = None,
+    lock_dir: Path | None = None,
+) -> bool:
+    if lock_dir is None:
+        return _append_item_to_native_zarr_unlocked(
+            item=item, bands=bands, zarr_path=zarr_path, chunk_size=chunk_size,
+            read_retries=read_retries, cache_dir=cache_dir, read_mode=read_mode,
+            progress=progress,
+        )
+    lock = lock_dir / "zarr" / f"{_safe_file_token(item.tile_id)}.lock"
+    with InterProcessLock(lock):
+        return _append_item_to_native_zarr_unlocked(
+            item=item, bands=bands, zarr_path=zarr_path, chunk_size=chunk_size,
+            read_retries=read_retries, cache_dir=cache_dir, read_mode=read_mode,
+            progress=progress,
+        )
 
 
 # Compatibility alias inside this isolated fork.

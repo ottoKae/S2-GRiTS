@@ -1,0 +1,92 @@
+workflow: "scenes"
+
+roi:
+  manual_mgrs_tiles:
+    - "50RPV"
+    - "50RQV"
+    - "50SMC"
+    - "50SMD"
+    - "50SNB"
+    - "50SNC"
+    - "50SND"
+    - "50SPA"
+    - "50SPB"
+    - "50SPC"
+    - "50SPD"
+    - "50SQA"
+    - "50SQB"
+    - "50SQC"
+    - "50SQD"
+    - "50SQE"
+    - "51RTQ"
+    - "51RUQ"
+    - "51STR"
+    - "51STS"
+    - "51STT"
+    - "51STU"
+    - "51STV"
+    - "51SUR"
+    - "51SUS"
+    - "51SVR"
+
+time:
+  start_date: "2025-01-01"
+  end_date: "2026-07-30"
+  query_interval: "monthly"
+  allow_recent: true
+
+source:
+  stac_api: "https://earth-search.aws.element84.com/v1"
+  collection: "sentinel-2-c1-l2a"
+  provider: "Element 84 Earth Search / AWS Open Data"
+  cloud_cover_max: 20
+  page_limit: 100
+  request_timeout_seconds: 90
+  max_retries: 4
+  retry_backoff_seconds: 5
+  read_mode: "local_cache_first"
+  local_cache_on_read_failure: true
+
+assets:
+  resolution_mode: "native_groups"
+  resampling: "none"
+  bands:
+    - "blue"      # B02, 10 m
+    - "green"     # B03, 10 m
+    - "red"       # B04, 10 m
+    - "nir"       # B08, 10 m
+    - "rededge1"  # B05, 20 m
+    - "rededge2"  # B06, 20 m
+    - "rededge3"  # B07, 20 m
+    - "nir08"     # B8A, 20 m
+    - "swir16"    # B11, 20 m
+    - "swir22"    # B12, 20 m
+    - "scl"       # SCL, 20 m
+    - "cloud"     # CLD, 20 m
+    - "coastal"   # B01, 60 m
+    - "nir09"     # B09, 60 m
+
+processing:
+  monthly:
+    enabled: false
+  cloud_mask:
+    enabled: false
+
+output:
+  base_dir: "E:/JiangSu_S2_native"
+  existing_store: "resume"
+  formats:
+    zarr: true
+    cog: false
+    preview: true
+    raw_assets: false
+
+runtime:
+  chunk_size: 512
+  read_retries: 4
+  download_scene_workers: 2
+  download_band_workers: 4
+  downloader: "requests"
+  manifest_flush_seconds: 30
+  max_tiles:
+  max_scenes_per_tile:

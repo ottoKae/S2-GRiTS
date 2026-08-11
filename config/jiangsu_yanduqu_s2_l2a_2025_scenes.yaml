@@ -1,0 +1,82 @@
+# Jiangsu Sentinel-2 L2A COG scenes workflow.
+# Usage:
+#   s2grits process_scenes --config config/jiangsu_s2_l2a_2025_scenes.yaml
+
+workflow: "scenes"
+
+roi:
+  shp_path: "F:/AgrD_System/data/basic_shp/江苏省/jiangsu_province.shp"
+  # Leave empty to enumerate tiles from shp_path. Fill manually to skip geometry lookup.
+  manual_mgrs_tiles:
+    - "50SQB"
+    - "50SQC"
+    - "51STS"
+    - "51STT"
+
+time:
+  years: [2025]
+  months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+  # months: [1]
+  allow_recent: true
+
+source:
+  stac_api: "https://earth-search.aws.element84.com/v1"
+  # Prefer Collection 1 for 2025 downloads: its Earth Search assets are more
+  # consistently exposed as HTTPS COGs for this downloader.
+  collection: "sentinel-2-c1-l2a"
+  # STAC item-level cloud filter. Set 100 to keep all scenes.
+  cloud_cover_max: 20
+  page_limit: 100
+  request_timeout_seconds: 90
+  max_retries: 3
+  retry_backoff_seconds: 5
+  read_mode: "local_cache_first"
+  local_cache_on_read_failure: true
+
+assets:
+  # All single-band COG data assets. Native 20 m / 60 m layers are resampled
+  # to target_resolution with nearest-neighbor during Zarr/COG writing.
+  bands:
+    - "coastal"   # B01, 60 m
+    - "blue"      # B02, 10 m
+    - "green"     # B03, 10 m
+    - "red"       # B04, 10 m
+    - "rededge1"  # B05, 20 m
+    - "rededge2"  # B06, 20 m
+    - "rededge3"  # B07, 20 m
+    - "nir"       # B08, 10 m
+    - "nir08"     # B8A, 20 m
+    - "nir09"     # B09, 60 m
+    - "swir16"    # B11, 20 m
+    - "swir22"    # B12, 20 m
+    - "aot"       # Aerosol optical thickness, 20 m
+    - "wvp"       # Water vapor, 20 m
+    - "scl"       # Scene classification layer, 20 m
+    - "cloud"     # Cloud probability, 20 m
+    - "snow"      # Snow probability
+  target_resolution: 10
+  resampling: "nearest"
+
+processing:
+  monthly:
+    enabled: false
+  cloud_mask:
+    # Pixel-level cloud mask products are intentionally not generated.
+    enabled: false
+
+output:
+  base_dir: "E:/JiangSu_S2"
+  existing_store: "resume"
+  formats:
+    zarr: true
+    cog: false
+    preview: true
+    raw_assets: false
+
+runtime:
+  chunk_size: 512
+  read_retries: 4
+  download_scene_workers: 2
+  download_band_workers: 8
+  max_tiles:
+  max_scenes_per_tile:

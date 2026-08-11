@@ -1,0 +1,67 @@
+workflow: "scenes"
+
+roi:
+  manual_mgrs_tiles:
+    - "50RPV"
+
+time:
+  start_date: "2025-01-01"
+  end_date: "2025-01-31"
+  query_interval: "monthly"
+  allow_recent: true
+
+source:
+  stac_api: "https://earth-search.aws.element84.com/v1"
+  collection: "sentinel-2-c1-l2a"
+  provider: "Element 84 Earth Search / AWS Open Data"
+  cloud_cover_max: 20
+  page_limit: 100
+  request_timeout_seconds: 90
+  max_retries: 4
+  retry_backoff_seconds: 5
+  read_mode: "local_cache_first"
+  local_cache_on_read_failure: true
+
+assets:
+  resolution_mode: "native_groups"
+  resampling: "none"
+  bands:
+    - "blue"
+    - "green"
+    - "red"
+    - "nir"
+    - "rededge1"
+    - "rededge2"
+    - "rededge3"
+    - "nir08"
+    - "swir16"
+    - "swir22"
+    - "scl"
+    - "cloud"
+    - "coastal"
+    - "nir09"
+
+processing:
+  monthly:
+    enabled: false
+  cloud_mask:
+    enabled: false
+
+output:
+  base_dir: "E:/JiangSu_S2_native_pilot"
+  existing_store: "resume"
+  formats:
+    zarr: true
+    cog: false
+    preview: true
+    raw_assets: false
+
+runtime:
+  chunk_size: 512
+  read_retries: 4
+  download_scene_workers: 1
+  download_band_workers: 4
+  downloader: "requests"
+  manifest_flush_seconds: 5
+  max_tiles: 1
+  max_scenes_per_tile: 1

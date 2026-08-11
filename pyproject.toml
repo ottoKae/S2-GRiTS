@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "s2grits"
+version = "0.2.0"
+description = "Sentinel-2 L2A native-resolution COG downloader and grouped Zarr builder"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pyarrow",
+  "pyyaml",
+  "requests",
+  "rasterio",
+  "shapely",
+  "pyshp",
+  "zarr",
+  "tqdm",
+  "rich",
+]
+
+[project.scripts]
+s2grits = "s2grits.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

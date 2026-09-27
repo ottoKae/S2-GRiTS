@@ -17,7 +17,7 @@ dependencies = [
   "rasterio",
   "shapely",
   "pyshp",
-  "zarr",
+  "zarr>=3,<4",
   "tqdm",
   "rich",
 ]
@@ -32,6 +32,10 @@ s2grits = "s2grits.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
 
 [tool.ruff]
 target-version = "py312"

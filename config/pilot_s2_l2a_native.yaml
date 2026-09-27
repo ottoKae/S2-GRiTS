@@ -48,10 +48,15 @@ processing:
     enabled: false
 
 output:
-  base_dir: "E:/JiangSu_S2_native_pilot"
+  base_dir: "./outputs/pilot_s2_l2a_native"
   logs_dir: "../logs"
   cache_dir: "../_cache"
   existing_store: "resume"
+  # Lossless codec for NEW arrays; existing arrays retain their recorded codec.
+  zarr_compression:
+    cname: zstd
+    clevel: 5
+    shuffle: shuffle  # byte shuffle (not bitshuffle)
   formats:
     zarr: true
     cog: false

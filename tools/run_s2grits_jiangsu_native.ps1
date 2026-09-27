@@ -1,12 +1,16 @@
 param(
-    [string]$Config = "F:\AgrD_System\S2-GRiTS-native\config\jiangsu_s2_l2a_native_20250101_20260730.yaml",
-    [switch]$DoctorOnly
+    [string]$Config = (Join-Path $PSScriptRoot "..\config\jiangsu_s2_l2a_native_20250101_20260730.yaml"),
+    [switch]$DoctorOnly,
+    [string]$PythonExe = "python"
 )
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = "F:\AgrD_System\S2-GRiTS-native"
-$CondaEnv = "C:\envs\py312_s2grits"
-$PythonExe = Join-Path $CondaEnv "python.exe"
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$PythonExe = (Get-Command -Name $PythonExe -CommandType Application -ErrorAction Stop).Source
+$CondaEnv = Split-Path -Parent $PythonExe
+if ((Split-Path -Leaf $CondaEnv) -eq "Scripts") {
+    $CondaEnv = Split-Path -Parent $CondaEnv
+}
 
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     throw "Python executable was not found: $PythonExe"

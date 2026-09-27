@@ -127,6 +127,8 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
     logger = setup_logger(log_dir, output_root.name)
     log_path = getattr(logger, "log_path", None)
     chunk_size = int(cfg["runtime"]["chunk_size"])
+    compression = cfg["output"]["zarr_compression"]
+    logger.info("New Zarr arrays: Blosc %s; spatial chunk=%d, time chunk=1", compression, chunk_size)
     configured_downloader = str(cfg["runtime"].get("downloader", "auto")).lower()
     if configured_downloader not in {"auto", "aria2c", "requests"}:
         raise ValueError("runtime.downloader must be auto, aria2c, or requests.")
@@ -156,6 +158,7 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
     for group_name, group_bands in band_groups.items():
         CONSOLE.print(f"Bands {group_name}:          {display_bands(group_bands)}")
     CONSOLE.print("Resolution mode:     native 10m/20m/60m (no resampling)")
+    CONSOLE.print(f"New array codec:     Blosc {compression}")
     CONSOLE.print(
         "Workers:             "
         f"scene={cfg['runtime'].get('download_scene_workers', 2)}, "
@@ -354,6 +357,7 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
                             bands=bands,
                             zarr_path=zarr_path,
                             chunk_size=chunk_size,
+                            compression=compression,
                             read_retries=int(cfg["runtime"].get("read_retries", 4)),
                             cache_dir=cache_dir,
                             read_mode=str(cfg["source"].get("read_mode", "local_cache_first")),

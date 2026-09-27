@@ -36,6 +36,7 @@ def cmd_doctor(args) -> None:
     for group_name, bands in groups.items():
         print(f"Bands {group_name}: {display_bands(bands)}")
     print(f"Resampling: {cfg['assets']['resampling']}")
+    print(f"New array compression: Blosc {cfg['output']['zarr_compression']}")
     print(f"Pixel cloud mask generated: {cfg['processing']['cloud_mask']['enabled']}")
     selected_downloader = str(cfg["runtime"].get("downloader", "auto"))
     print(f"Downloader selected: {selected_downloader}")

@@ -48,10 +48,15 @@ processing:
     enabled: false
 
 output:
-  base_dir: "D:/data/S2-GRiTS-17MPU-test"
+  base_dir: "./outputs/ecuador_17mpu_native_test"
   logs_dir: "../logs"
   cache_dir: "../_cache"
   existing_store: "resume"
+  # Lossless codec for NEW arrays; existing arrays retain their recorded codec.
+  zarr_compression:
+    cname: zstd
+    clevel: 5
+    shuffle: shuffle  # byte shuffle (not bitshuffle)
   formats:
     zarr: true
     cog: false

@@ -73,10 +73,15 @@ processing:
     enabled: false
 
 output:
-  base_dir: "E:/JiangSu_S2_native"
+  base_dir: "./outputs/jiangsu_s2_l2a_native_20250101_20260730"
   logs_dir: "../logs"
   cache_dir: "../_cache"
   existing_store: "resume"
+  # Lossless codec for NEW arrays; existing arrays retain their recorded codec.
+  zarr_compression:
+    cname: zstd
+    clevel: 5
+    shuffle: shuffle  # byte shuffle (not bitshuffle)
   formats:
     zarr: true
     cog: false

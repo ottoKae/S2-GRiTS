@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from rasterio.windows import Window
 
 from .bands import BAND_LABELS, resolution_metres, selected_native_groups, variable_name
 from .locking import InterProcessLock
+from .compression import compression_settings, make_compressor
 from .canonical_catalog_schema import (
     GRID_ID_VERSION,
     format_grid_name,
@@ -92,9 +94,10 @@ def _band_dtype(asset: dict) -> str:
     return str(_band_metadata(asset).get("data_type") or "uint16")
 
 
-def _window_iter(width: int, height: int, chunk_size: int):
-    for row in range(0, height, chunk_size):
-        h = min(chunk_size, height - row)
+def _window_iter(width: int, height: int, chunk_size: int, chunk_height: int | None = None):
+    chunk_height = chunk_height or chunk_size
+    for row in range(0, height, chunk_height):
+        h = min(chunk_height, height - row)
         for col in range(0, width, chunk_size):
             w = min(chunk_size, width - col)
             yield Window(col, row, w, h)
@@ -402,6 +405,7 @@ def _init_resolution_group(
     bands: list[str],
     reference: dict,
     chunk_size: int,
+    compression: dict | None = None,
 ):
     group = root.require_group(group_name)
     height = int(reference["height"])
@@ -493,6 +497,7 @@ def _init_resolution_group(
                 shape=(0, height, width),
                 chunks=(1, min(chunk_size, height), min(chunk_size, width)),
                 dtype=_band_dtype(item.assets[band]),
+                compressors=[make_compressor(_band_dtype(item.assets[band]), compression)],
                 fill_value=0,
                 dimension_names=["time", "y", "x"],
             )
@@ -511,6 +516,17 @@ def _init_resolution_group(
                 f"{group[variable].shape[1:]} "
                 f"does not match source grid {(height, width)}."
             )
+        else:
+            # Existing chunk bytes must continue to use their recorded codec.
+            # A setting change applies only to new arrays; conversion is a copy.
+            expected = make_compressor(group[variable].dtype, compression).to_dict()
+            actual = [codec.to_dict() for codec in group[variable].compressors]
+            if actual != [expected]:
+                _logger.warning(
+                    "[zarr] preserving existing codec for %s/%s: %s; requested=%s. "
+                    "Use tools/recompress_zarr.py for a verified separate copy.",
+                    group_name, variable, actual, expected,
+                )
     if "spatial_ref" not in group:
         add_cf_grid_mapping(group, crs_string)
     return group
@@ -551,9 +567,15 @@ def _write_native_band(
     resolution = resolution_metres(group_name)
     with rasterio.open(source_str) as src:
         _validate_native_grid(src, reference, band, resolution)
-        windows = list(_window_iter(src.width, src.height, chunk_size))
         variable = variable_name(band)
         target = group[variable]
+        if np.dtype(src.dtypes[0]) != target.dtype:
+            raise ValueError(
+                f"Refusing lossy dtype conversion for {group_name}/{variable}: "
+                f"source={src.dtypes[0]}, stored={target.dtype}."
+            )
+        # On resume, use the stored chunk grid even if runtime.chunk_size changed.
+        windows = list(_window_iter(src.width, src.height, target.chunks[2], target.chunks[1]))
         next_log_fraction = 0.25
         for window_index, window in enumerate(windows, start=1):
             data = _read_window_with_retry(src, band, source_str, window, retries=read_retries)
@@ -602,7 +624,11 @@ def _append_item_to_native_zarr_unlocked(
     cache_dir: Path | None = None,
     read_mode: str = "local_cache_first",
     progress: RunProgress | None = None,
+    compression: dict | None = None,
 ) -> bool:
+    compression = compression_settings(compression)
+    if type(chunk_size) is not int or chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer.")
     metadata = _load_metadata(zarr_path)
     if any(entry.get("item_id") == item.id for entry in metadata.get("items", [])):
         _logger.info("[zarr] scene SKIP already committed item=%s", item.id)
@@ -616,7 +642,7 @@ def _append_item_to_native_zarr_unlocked(
         read_mode=read_mode,
     )
     zarr_path.parent.mkdir(parents=True, exist_ok=True)
-    root = zarr.open_group(str(zarr_path), mode="a")
+    root = zarr.open_group(str(zarr_path), mode="a", zarr_format=3)
     root.attrs.update(
         {
             "s2grits_version": "0.2.0-native",
@@ -651,6 +677,7 @@ def _append_item_to_native_zarr_unlocked(
             bands=group_bands,
             reference=reference,
             chunk_size=chunk_size,
+            compression=compression,
         )
 
     committed_count = len(metadata.get("items") or [])
@@ -732,19 +759,17 @@ def append_item_to_native_zarr(
     read_retries: int = 4, cache_dir: Path | None = None,
     read_mode: str = "local_cache_first", progress: RunProgress | None = None,
     lock_dir: Path | None = None,
+    compression: dict | None = None,
 ) -> bool:
-    if lock_dir is None:
+    lock = nullcontext()
+    if lock_dir is not None:
+        lock = InterProcessLock(lock_dir / "zarr" / f"{_safe_file_token(item.tile_id)}.lock")
+    with lock:
         return _append_item_to_native_zarr_unlocked(
             item=item, bands=bands, zarr_path=zarr_path, chunk_size=chunk_size,
             read_retries=read_retries, cache_dir=cache_dir, read_mode=read_mode,
             progress=progress,
-        )
-    lock = lock_dir / "zarr" / f"{_safe_file_token(item.tile_id)}.lock"
-    with InterProcessLock(lock):
-        return _append_item_to_native_zarr_unlocked(
-            item=item, bands=bands, zarr_path=zarr_path, chunk_size=chunk_size,
-            read_retries=read_retries, cache_dir=cache_dir, read_mode=read_mode,
-            progress=progress,
+            compression=compression,
         )
 
 

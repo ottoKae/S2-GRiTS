@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -124,18 +125,14 @@ def read_catalog(path: Path) -> list[dict]:
 def upsert_records(
     path: Path, records: list[dict], lock_path: Path | None = None
 ) -> list[dict]:
-    def write() -> list[dict]:
+    with InterProcessLock(lock_path) if lock_path is not None else nullcontext():
         merged = _dedupe_sort(read_catalog(path) + records)
         _write_catalog(path, merged)
         return merged
-    if lock_path is None:
-        return write()
-    with InterProcessLock(lock_path):
-        return write()
 
 
 def resync_global_catalog(output_root: Path, lock_path: Path | None = None) -> Path | None:
-    def write() -> Path | None:
+    with InterProcessLock(lock_path) if lock_path is not None else nullcontext():
         rows: list[dict] = []
         for path in output_root.glob("*/catalog.parquet"):
             rows.extend(read_catalog(path))
@@ -144,7 +141,3 @@ def resync_global_catalog(output_root: Path, lock_path: Path | None = None) -> P
         out = output_root / "catalog.parquet"
         _write_catalog(out, _dedupe_sort(rows))
         return out
-    if lock_path is None:
-        return write()
-    with InterProcessLock(lock_path):
-        return write()

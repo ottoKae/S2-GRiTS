@@ -2,6 +2,24 @@
 
 S2-GRiTS stores Sentinel-2 L2A as three independent native grids (`10m`, `20m`, `60m`). Each array has dimensions `(time, y, x)`; no resampling occurs during ingestion.
 
+New band arrays use Zarr format 3 with explicit Blosc/Zstd level 5, byte shuffle,
+and `typesize=dtype.itemsize`. `output.zarr_compression` can adjust the lossless
+codec settings. Band chunks remain `(1, min(chunk_size, height), min(chunk_size, width))`.
+Coordinate and scalar arrays retain their small default Zarr encodings. Existing
+band codecs are never changed on resume; a mismatch is logged and requires a
+verified separate copy to convert. Writes align with existing stored chunks even
+if the requested runtime chunk size changes. Raster/store dtype disagreement
+raises before assignment to prevent an implicit lossy cast.
+
+Storage codecs do not enter the scientific processing signature or grid ID.
+See [compression configuration and usage](LOSSLESS_COMPRESSION_ZH.md).
+
+Optional catalog and native-store locks now wrap a single write path using
+`contextlib.nullcontext` when no lock is requested. This removes duplicate
+branches without changing the critical sections, public arguments or rollback
+behavior. Local tests, benchmarks, reports and plans are excluded from Git;
+published configuration examples and launchers contain no workstation paths.
+
 ## Transaction and resume boundary
 
 For each scene the writer:

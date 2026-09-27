@@ -16,7 +16,7 @@ dependencies:
   - pyshp
   - numpy
   - xarray
-  - zarr>=3
+  - zarr>=3,<4
   - pyarrow
 
   # 网络、配置与运行时工具。

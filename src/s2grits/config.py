@@ -8,6 +8,7 @@ from datetime import date
 import yaml
 
 from .bands import NATIVE_BANDS, selected_native_groups
+from .compression import DEFAULT_COMPRESSION, compression_settings
 
 
 DEFAULT_BANDS = list(NATIVE_BANDS)
@@ -59,6 +60,11 @@ def apply_defaults(cfg: dict[str, Any]) -> None:
     output.setdefault("logs_dir", "../logs")
     output.setdefault("cache_dir", "../_cache")
     output.setdefault("existing_store", "resume")
+    if output.get("zarr_compression") is None:
+        output["zarr_compression"] = dict(DEFAULT_COMPRESSION)
+    elif isinstance(output["zarr_compression"], dict):
+        for key, value in DEFAULT_COMPRESSION.items():
+            output["zarr_compression"].setdefault(key, value)
     formats = output.setdefault("formats", {})
     formats.setdefault("zarr", True)
     formats.setdefault("cog", True)
@@ -85,6 +91,13 @@ def output_path(cfg: dict[str, Any], key: str) -> Path:
 
 def validate_config(cfg: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    try:
+        compression_settings((cfg.get("output") or {}).get("zarr_compression"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    chunk_size = (cfg.get("runtime") or {}).get("chunk_size", 512)
+    if type(chunk_size) is not int or chunk_size <= 0:
+        errors.append("runtime.chunk_size must be a positive integer.")
     if cfg.get("workflow") != "scenes":
         errors.append("Only workflow='scenes' is implemented in this S2-GRiTS build.")
 

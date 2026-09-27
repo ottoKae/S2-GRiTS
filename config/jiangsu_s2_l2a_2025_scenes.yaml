@@ -5,7 +5,7 @@
 workflow: "scenes"
 
 roi:
-  shp_path: "F:/AgrD_System/data/basic_shp/江苏省/jiangsu_province.shp"
+  shp_path: "./data/roi.shp"
   # Leave empty to enumerate tiles from shp_path. Fill manually to skip geometry lookup.
   manual_mgrs_tiles:
     - "50RPV"
@@ -87,7 +87,7 @@ processing:
     enabled: false
 
 output:
-  base_dir: "E:/JiangSu_S2"
+  base_dir: "./outputs/jiangsu_s2_l2a_2025_scenes"
   logs_dir: "../logs"
   cache_dir: "../_cache"
   existing_store: "resume"

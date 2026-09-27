@@ -75,6 +75,10 @@ output:
   logs_dir: "../logs"
   cache_dir: "../_cache"
   existing_store: resume
+  zarr_compression:
+    cname: zstd
+    clevel: 5
+    shuffle: shuffle  # byte shuffle
   formats:
     zarr: true
     cog: false
@@ -84,10 +88,16 @@ output:
 
 相对的 `logs_dir/cache_dir` 以 `output.base_dir` 为基准解析，因此 `../logs` 和 `../_cache` 表示数据集旁的共享目录，不依赖代码仓库或当前工作目录。缓存也可以显式指向独立高速盘。日志文件名包含数据集、工作流、正式启动 UTC 时间与 PID；缓存以全局 STAC Item ID 和资产键组织。若省略配置，默认值就是上述两个相对路径。
 
+新建数据变量默认采用 **Zarr v3 + Blosc/Zstd level 5 + byte shuffle**，保持原生 DN、dtype、nodata 和 `(1,512,512)` 分块（小图幅按边界缩小）。压缩参数省略时仍采用上述默认值。旧数组续写沿用原 codec，并在与配置不同时记录警告；不能通过修改旧数组的 `zarr.json` 转换数据。
+
+压缩配置、旧库副本转换和 resolver 用法见 [无损压缩使用说明](docs/LOSSLESS_COMPRESSION_ZH.md)。压缩倍数取决于内容；相对未压缩数组的倍数不等于相对现有 Zstd 库的额外收益。
+
 ```powershell
 s2grits doctor --config config/ecuador_17mpu_native_test.yaml --network
 s2grits process_scenes --config config/ecuador_17mpu_native_test.yaml
 ```
+
+仓库中的配置使用通用相对路径。个人数据位置和运行配置放在忽略的 `config/local/` 下，并通过 `--config config/local/<配置名>.yaml` 显式选择。PowerShell 启动脚本按自身位置定位仓库，默认使用当前环境的 `python`，也可用 `-PythonExe` 指定解释器。
 
 ## 读取 Zarr
 
@@ -115,9 +125,13 @@ analysis = ds20[["nir_narrow", "swir_1", "swir_2"]]
 
 ## 测试
 
+测试源码和测试数据集中在本地 `tests/`，整个目录按本仓库约定加入 `.gitignore`。已有本地测试目录时运行：
+
 ```powershell
-python -m pytest -q
+python -B tests/run.py
 ```
+
+入口为每次运行创建独立的临时目录，禁用 pytest 缓存和 Python 字节码，报告保存到 `tests/reports/<run-id>/`。`docs/plans/`、`docs/reports/` 和 `tooling/diagnostics/` 中的计划、测试与诊断报告也仅保留本地；公共使用说明放在 `docs/`。
 
 共同的只读多传感器解析逻辑位于独立 `GRiTS-Resolver` 仓库；S2-GRiTS 继续只负责事实数据生产和安全提交。
 

@@ -53,7 +53,7 @@ def _catalog_records(
 ) -> list[dict]:
     if zarr_path is None:
         return []
-    root = zarr.open_group(str(zarr_path), mode="r")
+    root = zarr.open_group(str(zarr_path), mode="r", use_consolidated=False)
     relative_zarr = relative_asset_path(zarr_path, output_root)
     relative_preview = relative_asset_path(preview_path, output_root)
     records = []

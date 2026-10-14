@@ -1,0 +1,35 @@
+# Template only: replace all paths and REPLACE_* hashes with your frozen source contract.
+# Paths resolve relative to this YAML. Copy the environment lock path accordingly.
+workflow: quality_companion
+quality:
+  spectral_root: D:/data/S2-native
+  frozen_features: ./local/features.jsonl
+  frozen_features_sha256: REPLACE_WITH_FEATURES_SHA256
+  backfill_manifest: ./local/scl_manifest.jsonl
+  backfill_manifest_sha256: REPLACE_WITH_MANIFEST_SHA256
+  spectral_catalog_sha256: REPLACE_WITH_SPECTRAL_CATALOG_SHA256
+  environment_lock: ./quality_environment.lock.json
+  local_source_candidates: []
+assets:
+  bands: [scl]
+  resolution_mode: native_groups
+  resampling: none
+processing:
+  monthly: {enabled: false}
+  cloud_mask: {enabled: false}
+output:
+  base_dir: D:/data/S2-quality-scl
+  cache_dir: D:/data/S2-quality-scl-cache
+  formats: {zarr: true, cog: false, preview: false, raw_assets: false}
+  zarr_compression: {cname: zstd, clevel: 5, shuffle: shuffle}
+cache:
+  retention: delete_after_verified
+  max_scenes: 1
+  max_bytes: 67108864
+runtime:
+  chunk_size: 512
+  prefetch_scenes: 0
+  max_download_attempts: 3
+  request_timeout_seconds: 120
+  min_free_output_gib: 20
+  max_output_gib: 100

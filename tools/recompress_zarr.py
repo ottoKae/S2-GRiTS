@@ -129,7 +129,9 @@ def _inspect(source: Path, snapshot: dict) -> tuple[dict, dict]:
         key = Path(filename).relative_to(parent).as_posix()
         encoding = array.metadata.chunk_key_encoding
         try:
-            coords = encoding.decode_chunk_key(key)
+            # Parse the two supported formats; Zarr 3.1.5's default decoder retains the separator after c.
+            parts = key.split(encoding.separator)
+            coords = tuple(map(int, parts[1:] if encoding.name == "default" else parts))
             # v2 scalar chunks use '0', while the logical coordinate tuple is ().
             if array.ndim == 0 and key == encoding.encode_chunk_key(()):
                 coords = ()

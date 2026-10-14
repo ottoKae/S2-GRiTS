@@ -91,6 +91,8 @@ def output_path(cfg: dict[str, Any], key: str) -> Path:
 
 def validate_config(cfg: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    if "companions" in cfg:
+        errors.append("companions is only supported by process_pipeline; use a separate pipeline YAML.")
     try:
         compression_settings((cfg.get("output") or {}).get("zarr_compression"))
     except ValueError as exc:
@@ -181,6 +183,44 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
         )
 
     return errors
+
+
+def load_pipeline_config(path: str | Path) -> dict[str, Any]:
+    """Parse orchestration only; never open a disabled companion's resources."""
+    path = Path(path).resolve()
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(cfg, dict) or cfg.get("workflow") != "pipeline":
+        raise ValueError("process_pipeline requires workflow: pipeline")
+    if set(cfg) - {"workflow", "spectral", "companions"}:
+        raise ValueError("Unknown pipeline fields; scene settings belong in spectral.job_config")
+    spectral = cfg.get("spectral")
+    if not isinstance(spectral, dict) or set(spectral) - {"root", "job_config"}:
+        raise ValueError("spectral must contain root and optional job_config")
+
+    def resolve(value, name):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a nonempty path string")
+        candidate = Path(value)
+        return (candidate if candidate.is_absolute() else path.parent / candidate).resolve()
+
+    root = resolve(spectral.get("root"), "spectral.root")
+    scene_job = spectral.get("job_config")
+    scene_job = resolve(scene_job, "spectral.job_config") if scene_job is not None else None
+    companions = cfg.get("companions", {})
+    if not isinstance(companions, dict) or set(companions) - {"scl"}:
+        raise ValueError("companions supports only scl")
+    scl = companions.get("scl", {})
+    if not isinstance(scl, dict) or set(scl) - {"enabled", "job_config"}:
+        raise ValueError("companions.scl supports enabled and job_config")
+    enabled = scl.get("enabled", False)
+    if type(enabled) is not bool:
+        raise ValueError("companions.scl.enabled must be YAML true or false, not a string")
+    # Do not resolve, read or require the quality path while disabled.
+    quality_job = resolve(scl.get("job_config"), "companions.scl.job_config") if enabled else None
+    if path in (scene_job, quality_job):
+        raise ValueError("A pipeline cannot use itself as a child job")
+    return {"spectral_root": root, "scene_job": scene_job,
+            "scl_enabled": enabled, "quality_job": quality_job}
 
 
 def date_interval(cfg: dict[str, Any]) -> str:

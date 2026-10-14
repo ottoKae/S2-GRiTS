@@ -39,8 +39,10 @@ credentials*.json
 /config/*.private.yaml
 /config/*.private.yml
 
-# Local-only tests: source, fixtures, generated reports and caches.
-/tests/
+# Keep test source; ignore only generated reports, downloaded data and caches.
+/tests/data/
+/tests/reports/
+/tests/local/
 /.smoke_cache/
 /.test-tmp/
 /.tmp/
@@ -64,6 +66,9 @@ plan.md
 *_report.md
 *测试报告*.md
 *计划*.md
+
+# Frozen workstation job: retain its bytes/path for production resume bindings.
+/config/ecuador40_scl_companion.example.yaml
 
 # Downloaded/generated products are not source code.
 /outputs/

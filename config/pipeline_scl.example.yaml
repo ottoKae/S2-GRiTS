@@ -1,0 +1,13 @@
+# Run with: s2grits process_pipeline --config <this-file> --dry-run
+# All paths here are relative to THIS YAML. Child jobs keep their own path rules.
+workflow: pipeline
+spectral:
+  root: D:/data/S2-native
+  job_config: null  # null reuses an existing archive; no spectral writes
+companions:
+  scl:
+    enabled: false
+    job_config: null  # true requires your frozen quality_companion YAML
+# For a new spectral archive, set spectral.job_config to its scenes YAML,
+# keeping scl.enabled=false. After completion freeze its source manifests,
+# prepare the quality job, then use job_config:null above and enable SCL.

@@ -90,6 +90,22 @@ def cmd_process_scenes(args) -> None:
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
+def cmd_backfill_quality(args) -> None:
+    from .quality_backfill import run_quality_backfill
+    result = run_quality_backfill(args.config, dry_run=args.dry_run,
+                                 max_new_scenes=args.max_new_scenes, tiles=args.tiles,
+                                 max_new_scenes_per_tile=args.max_new_scenes_per_tile)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def cmd_process_pipeline(args) -> None:
+    from .pipeline import run_pipeline
+    result = run_pipeline(args.config, dry_run=args.dry_run,
+                          max_new_scenes=args.max_new_scenes, tiles=args.tiles,
+                          max_new_scenes_per_tile=args.max_new_scenes_per_tile)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="s2grits",
@@ -106,6 +122,22 @@ def build_parser() -> argparse.ArgumentParser:
     scenes = sub.add_parser("process_scenes", help="Download/process Sentinel-2 L2A scenes")
     scenes.add_argument("--config", required=True)
     scenes.set_defaults(func=cmd_process_scenes)
+
+    quality = sub.add_parser("backfill_quality", help="Build a frozen-scene SCL companion Zarr")
+    quality.add_argument("--config", required=True)
+    quality.add_argument("--dry-run", action="store_true", help="Read-only preflight; no HTTP or output creation")
+    quality.add_argument("--max-new-scenes", type=int)
+    quality.add_argument("--max-new-scenes-per-tile", type=int)
+    quality.add_argument("--tiles", nargs="+", help="Process chronological prefixes of these frozen tiles")
+    quality.set_defaults(func=cmd_backfill_quality)
+
+    pipeline = sub.add_parser("process_pipeline", help="Run spectral jobs or optional frozen SCL pairing")
+    pipeline.add_argument("--config", required=True)
+    pipeline.add_argument("--dry-run", action="store_true", help="Read-only config/source preflight; no HTTP")
+    pipeline.add_argument("--max-new-scenes", type=int, help="SCL additions only; not a spectral scene limit")
+    pipeline.add_argument("--max-new-scenes-per-tile", type=int, help="SCL additions per frozen tile")
+    pipeline.add_argument("--tiles", nargs="+", help="SCL frozen tiles only; spectral ROI stays in its job YAML")
+    pipeline.set_defaults(func=cmd_process_pipeline)
 
     return parser
 

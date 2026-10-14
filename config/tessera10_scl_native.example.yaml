@@ -1,0 +1,34 @@
+# One-scene example for a NEW store; this is not a backfill command.
+workflow: scenes
+roi:
+  manual_mgrs_tiles: [17MPU]
+time:
+  start_date: "2024-01-01"
+  end_date: "2024-01-31"
+  query_interval: monthly
+source:
+  collection: sentinel-2-c1-l2a
+  cloud_cover_max: 100
+  read_mode: local_cache_first
+assets:
+  resolution_mode: native_groups
+  resampling: none
+  # Ten model spectral assets plus one separate categorical quality layer.
+  bands: [red, blue, green, nir, nir08, rededge1, rededge2, rededge3, swir16, swir22, scl]
+processing:
+  monthly: {enabled: false}
+  cloud_mask: {enabled: false}
+output:
+  base_dir: ./outputs/tessera10_scl_native_example
+  logs_dir: ../logs
+  cache_dir: ../_cache
+  existing_store: resume
+  formats: {zarr: true, cog: false, preview: false, raw_assets: false}
+  zarr_compression: {cname: zstd, clevel: 5, shuffle: shuffle}
+runtime:
+  chunk_size: 512
+  download_scene_workers: 1
+  download_band_workers: 2
+  downloader: requests
+  max_tiles: 1
+  max_scenes_per_tile: 1

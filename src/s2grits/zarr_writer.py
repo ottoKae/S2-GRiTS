@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 import json
 import logging
@@ -625,10 +626,13 @@ def _append_item_to_native_zarr_unlocked(
     read_mode: str = "local_cache_first",
     progress: RunProgress | None = None,
     compression: dict | None = None,
+    write_workers: int = 1,
 ) -> bool:
     compression = compression_settings(compression)
     if type(chunk_size) is not int or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer.")
+    if type(write_workers) is not int or not 1 <= write_workers <= 4:
+        raise ValueError("write_workers must be an integer from 1 to 4.")
     metadata = _load_metadata(zarr_path)
     if any(entry.get("item_id") == item.id for entry in metadata.get("items", [])):
         _logger.info("[zarr] scene SKIP already committed item=%s", item.id)
@@ -642,7 +646,7 @@ def _append_item_to_native_zarr_unlocked(
         read_mode=read_mode,
     )
     zarr_path.parent.mkdir(parents=True, exist_ok=True)
-    root = zarr.open_group(str(zarr_path), mode="a", zarr_format=3)
+    root = zarr.open_group(str(zarr_path), mode="a", zarr_format=3, use_consolidated=False)
     root.attrs.update(
         {
             "s2grits_version": "0.2.0-native",
@@ -703,21 +707,44 @@ def _append_item_to_native_zarr_unlocked(
                 references[group_name]["width"],
                 references[group_name]["height"],
             )
-            for band in group_bands:
+            def write_band(band: str) -> None:
                 _write_native_band(
-                    source=asset_paths[band],
-                    band=band,
-                    group_name=group_name,
-                    group=groups[group_name],
-                    reference=references[group_name],
-                    t_index=t_index,
-                    chunk_size=chunk_size,
-                    read_retries=read_retries,
-                    progress=progress,
-                    completed_bands=completed_bands,
-                    total_bands=len(bands),
+                    source=asset_paths[band], band=band, group_name=group_name,
+                    group=groups[group_name], reference=references[group_name],
+                    t_index=t_index, chunk_size=chunk_size, read_retries=read_retries,
+                    # RunProgress is shared state; only the calling thread updates it.
+                    progress=progress if write_workers == 1 else None,
+                    completed_bands=completed_bands, total_bands=len(bands),
                 )
-                completed_bands += 1
+
+            if write_workers == 1:
+                for band in group_bands:
+                    write_band(band)
+                    completed_bands += 1
+            else:
+                # Each task owns a distinct band array and rasterio reader. Group
+                # metadata, array resizing and time/sidecar commits stay serial,
+                # under the single tile lock held by the public wrapper.
+                with ThreadPoolExecutor(max_workers=write_workers) as executor:
+                    futures = {}
+                    try:
+                        for band in group_bands:
+                            futures[executor.submit(write_band, band)] = band
+                        for future in as_completed(futures):
+                            future.result()
+                            completed_bands += 1
+                            if progress:
+                                progress.update_scene_write(
+                                    completed_bands=completed_bands,
+                                    band_count=len(bands),
+                                    detail=f"Zarr {group_name}/{variable_name(futures[future])} complete",
+                                )
+                    except BaseException:
+                        for future in futures:
+                            future.cancel()
+                        # Exiting the executor waits for every active writer before
+                        # the enclosing handler can resize arrays for rollback.
+                        raise
             _logger.info(
                 "[PHASE] zarr.%s END tile=%s item=%s elapsed=%s",
                 group_name,
@@ -742,7 +769,7 @@ def _append_item_to_native_zarr_unlocked(
             }
         )
         _save_metadata(zarr_path, metadata)
-    except Exception:
+    except BaseException:
         _resize_native_arrays(root, band_groups, committed_count)
         _logger.exception(
             "[zarr] scene ROLLBACK tile=%s item=%s committed_index=%d",
@@ -760,6 +787,7 @@ def append_item_to_native_zarr(
     read_mode: str = "local_cache_first", progress: RunProgress | None = None,
     lock_dir: Path | None = None,
     compression: dict | None = None,
+    write_workers: int = 1,
 ) -> bool:
     lock = nullcontext()
     if lock_dir is not None:
@@ -770,6 +798,7 @@ def append_item_to_native_zarr(
             read_retries=read_retries, cache_dir=cache_dir, read_mode=read_mode,
             progress=progress,
             compression=compression,
+            write_workers=write_workers,
         )
 
 

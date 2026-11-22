@@ -5,27 +5,29 @@ consume only a published companion generation while this producer is stopped.
 """
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import sys
 import time
+from collections import defaultdict
+from contextlib import nullcontext
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import rasterio
-from rasterio.windows import Window
 import requests
 import yaml
 import zarr
+from rasterio.windows import Window
 
 from .catalog import CATALOG_SCHEMA, read_catalog, resync_global_catalog, upsert_records
 from .compression import make_compressor
@@ -79,9 +81,9 @@ def load_json(path):
 
 
 def time_ns(value):
-    stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    stamp = datetime.fromisoformat(str(value))
     require(stamp.tzinfo is not None, "UTC timezone missing")
-    return np.datetime64(stamp.astimezone(timezone.utc).replace(tzinfo=None), "ns")
+    return np.datetime64(stamp.astimezone(UTC).replace(tzinfo=None), "ns")
 
 
 def safe_path(path, root=None):
@@ -233,7 +235,10 @@ def load_job(config_path):
                "cache_root": str(cache_root.resolve()), "environment": environment_versions(),
                "source_sha256": {name: digest(Path(__file__).parent / name) for name in
                                  ("quality_backfill.py", "zarr_writer.py", "workflow.py", "catalog.py",
-                                  "canonical_catalog_schema.py", "compression.py", "locking.py", "stac.py")}}
+                                  "canonical_catalog_schema.py", "compression.py", "locking.py", "stac.py",
+                                  "quality_provenance.py", "provenance.py", "provenance_contract.py")}}
+    from .quality_provenance import validate_options
+    validate_options(cfg)
     return cfg, scenes, binding
 
 
@@ -281,7 +286,7 @@ def download_source(scene, path, cfg):
             verify_source(part, scene)
             os.replace(part, path)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - bounded retries include transport and validation failures.
             last = exc
             if attempt + 1 < cfg["runtime"].get("max_download_attempts", 3):
                 time.sleep(2 ** attempt)
@@ -315,6 +320,51 @@ def release_cache(root, scene, binding):
     directory.rmdir()
 
 
+def _pixel_hasher(shape):
+    value = hashlib.sha256()
+    value.update(json.dumps({"dtype": "uint8", "shape": list(shape), "block": 512}, sort_keys=True).encode("ascii"))
+    return value
+
+
+def decoded_scene_digest(store, index):
+    """Hash decoded values, including legal implicit all-zero chunks."""
+    target = _open(store)["20m/scl"]
+    require(target.dtype == np.dtype("uint8"), "Quality dtype differs")
+    value = _pixel_hasher(target.shape[1:])
+    for row in range(0, target.shape[1], 512):
+        for col in range(0, target.shape[2], 512):
+            block = np.asarray(target[index, row:row+512, col:col+512])
+            require(bool(np.all(block <= 11)), "Invalid stored SCL class")
+            value.update(block.tobytes(order="C"))
+    return value.hexdigest()
+
+
+def _source_version(scene):
+    item = scene["item"]
+    return {"collection": item.collection, "item_id": item.id, "tile_id": item.tile_id,
+            "datetime": item.datetime, "href": item.assets["scl"]["href"],
+            "source_sha256": scene["expected"]["source_sha256"],
+            "raster_metadata": item.assets["scl"].get("raster:bands", [{}])[0],
+            "product_properties": {key: item.properties.get(key) for key in
+                ("s2:product_uri", "s2:processing_baseline", "s2:granule_id", "created", "updated")}}
+
+
+def _scene_intent(state, scene, binding, index):
+    path = state / "intents" / f"{scene['item'].tile_id}_{scene['item'].id}.json"
+    identity = {"binding": binding, "source_version": _source_version(scene), "index": index}
+    if path.exists():
+        value = load_json(path)
+        require(all(value.get(key) == expected for key, expected in identity.items()), "Quality write intent changed")
+        return value
+    value = {**identity, "generation_id": "gen-" + uuid4().hex, "operation": "append",
+             "processing_contract": {"native_copy": True, "resampling": False,
+                 "scale_applied": False, "offset_applied": False, "harmonization_applied": False,
+                 "dtype": "uint8", "raw_nodata": 0},
+             "upstream_processing": "source_declared_not_independently_verified"}
+    atomic_json(path, value)
+    return value
+
+
 def verify_scene(source_path, store, index, scene):
     """Reopen both persisted products, compare every pixel in bounded windows."""
     started = time.perf_counter()
@@ -330,6 +380,7 @@ def verify_scene(source_path, store, index, scene):
             np.allclose(group.attrs["transform"][:6], expected["transform"][:6], rtol=0, atol=1e-9), "SCL Zarr grid differs")
     require(root["time"][index] == group["time"][index] == time_ns(scene["item"].datetime), "SCL Zarr UTC differs")
     compared = mismatched = 0
+    decoded = _pixel_hasher(target.shape[1:])
     with rasterio.open(source_path) as source:
         require(source.dtypes == ("uint8",) and (source.height, source.width) == target.shape[1:], "Source shape/dtype changed")
         for row in range(0, source.height, 512):
@@ -339,10 +390,12 @@ def verify_scene(source_path, store, index, scene):
                 b = np.asarray(target[index, row:row+height, col:col+width])
                 require(a.dtype == b.dtype and a.shape == b.shape, "Pixel block contract differs")
                 require(bool(np.all(a <= 11)), "Invalid source SCL class")
+                decoded.update(b.tobytes(order="C"))
                 compared += a.size
                 mismatched += int(np.count_nonzero(a != b))
     report = {"compared_pixels": compared, "mismatched_pixels": mismatched,
-              "full_pixel_comparison": True, "seconds": time.perf_counter()-started}
+              "full_pixel_comparison": True, "seconds": time.perf_counter()-started,
+              "decoded_sha256": decoded.hexdigest(), "decoded_hash_scheme": "uint8-block512-v1"}
     if mismatched:
         raise PixelMismatchError(report)
     return report
@@ -445,7 +498,7 @@ def publish(root, state, binding, scenes, accepted, links):
               "binding": binding, "environment": environment_versions(), "artifacts": artifacts,
               "accepted_prefixes": dict(accepted), "accepted_scenes": sum(accepted.values()),
               "expected_scenes": len(scenes), "complete": sum(accepted.values()) == len(scenes),
-              "batch_file_totals_before_marker": totals, "published_utc": datetime.now(timezone.utc).isoformat()}
+              "batch_file_totals_before_marker": totals, "published_utc": datetime.now(UTC).isoformat()}
     atomic_json(root / "companion.json", marker)
     return marker
 
@@ -465,7 +518,18 @@ def run_quality_backfill(config_path, *, dry_run=False, max_new_scenes=None, til
                 "download_started": False, "binding": binding}
     state = root / "_task_state"
     lock = root.parent / ("." + root.name + ".quality.lock")
-    with InterProcessLock(lock, timeout=0):
+    from .quality_provenance import validate_options
+    tracking = validate_options(cfg) is not None
+    spectral = cfg["quality"]["spectral_root"]
+    spectral_lock = InterProcessLock(spectral.parent / ("." + spectral.name + ".selected.lock"), timeout=0) if tracking else nullcontext()
+    with spectral_lock, InterProcessLock(lock, timeout=0):
+        if tracking:
+            from .provenance import read_current
+            require(not list((spectral / "provenance/pending").glob("*.json")), "Spectral production is pending")
+            checked_cfg, checked_scenes, checked_binding = load_job(config_path)
+            require(checked_binding == binding, "Quality inputs changed while acquiring source lock")
+            cfg, scenes = checked_cfg, checked_scenes
+            spectral_pointer = read_current(spectral)
         if root.exists() and any(root.iterdir()):
             require((root / "task_binding.json").exists() and load_json(root / "task_binding.json") == binding,
                     "Unknown or changed nonempty quality root")
@@ -481,6 +545,8 @@ def run_quality_backfill(config_path, *, dry_run=False, max_new_scenes=None, til
         if previous.get("state") == "published":
             for relative, expected_hash in previous["artifacts"].items():
                 require(digest(safe_path(root / relative, root)) == expected_hash, "Published artifact changed")
+        from .quality_provenance import QualityCopyTracker, begin_snapshot, finish_snapshot
+        pending_snapshot = begin_snapshot(root, cfg, binding)
         atomic_json(root / "companion.json", {**previous, "state": "updating", "binding": binding})
         per_tile = defaultdict(list)
         for scene in scenes:
@@ -559,7 +625,9 @@ def run_quality_backfill(config_path, *, dry_run=False, max_new_scenes=None, til
                         download_source(scene, path, cfg)
                         downloaded_bytes += expected["source_file_bytes"]
                 verify_source(path, scene)
-                atomic_json(state / "pending.json", {"item_id": item.id, "index": index, "state": "SOURCE_VERIFIED"})
+                intent = _scene_intent(state, scene, binding, index)
+                atomic_json(state / "pending.json", {"item_id": item.id, "index": index, "state": "SOURCE_VERIFIED",
+                                                     "generation_id": intent["generation_id"]})
                 store = store_path(root, item.tile_id)
                 # Only this scene's t-chunk directory is measured per scene.
                 scene_chunks = store / "20m/scl/c" / str(index)
@@ -583,8 +651,11 @@ def run_quality_backfill(config_path, *, dry_run=False, max_new_scenes=None, til
                 from dataclasses import replace
                 source_assets = {**item.assets, "scl": {**item.assets["scl"], "href": str(path)}}
                 local_item = replace(item, assets=source_assets)
-                append_item_to_native_zarr(item=local_item, bands=["scl"], zarr_path=store,
-                    chunk_size=512, compression=COMPRESSION, read_mode="remote_stream_first", lock_dir=state / "locks")
+                tracker = QualityCopyTracker(root, pending_snapshot, intent) if pending_snapshot else None
+                written = append_item_to_native_zarr(item=local_item, bands=["scl"], zarr_path=store,
+                    chunk_size=512, compression=COMPRESSION, read_mode="remote_stream_first", lock_dir=state / "locks",
+                    _provenance_tracker=tracker)
+                require(not written or tracker is None or tracker.committed, "Quality native commit was not observed")
                 atomic_json(state / "pending.json", {"item_id": item.id, "index": index, "state": "ZARR_COMMITTED"})
                 verification = verify_scene(path, store, index, scene)
                 records = _catalog_records(item=item, band_groups={"20m": ["scl"]}, zarr_path=store,
@@ -596,7 +667,9 @@ def run_quality_backfill(config_path, *, dry_run=False, max_new_scenes=None, til
                 link = _link(scene, store, root, index)
                 receipt = {"status": "ACCEPTED", "binding": binding, "item_id": item.id, "tile_id": item.tile_id,
                            "index": index, "source_sha256": expected["source_sha256"], "source_kind": source_kind,
-                           "verification": verification, "link": link}
+                           "verification": verification, "link": link,
+                           "generation_id": intent["generation_id"], "write_intent": intent,
+                           "executed_processing": intent["processing_contract"]}
                 atomic_json(_receipt_path(state, item), receipt)
                 accepted[item.tile_id] += 1
                 links.append(link)
@@ -606,13 +679,17 @@ def run_quality_backfill(config_path, *, dry_run=False, max_new_scenes=None, til
                 output_bytes += max(0, _file_totals(scene_chunks)["bytes"] - before) + 256 * 1024
                 newly_accepted += 1
                 new_per_tile[item.tile_id] += 1
+            if tracking:
+                require(digest(spectral / "catalog.parquet") == binding["spectral_catalog_sha256"]
+                        and read_current(spectral) == spectral_pointer, "Spectral version changed before quality publication")
             marker = publish(root, state, binding, scenes, accepted, links)
+            provenance = finish_snapshot(root, cfg, marker, pending_snapshot)
             return {"status": "published", "accepted_this_run": newly_accepted,
                     "accepted_total": marker["accepted_scenes"], "complete": marker["complete"],
                     "generation": marker["generation"], "download_started": downloaded_bytes > 0,
-                    "downloaded_source_bytes_this_run": downloaded_bytes}
+                    "downloaded_source_bytes_this_run": downloaded_bytes, "provenance": provenance}
         except BaseException as exc:
             atomic_json(state / "failure.json", {"error": str(exc), "accepted_prefixes": dict(accepted),
                                                    "verification": getattr(exc, "report", None),
-                                                   "utc": datetime.now(timezone.utc).isoformat()})
+                                                   "utc": datetime.now(UTC).isoformat()})
             raise

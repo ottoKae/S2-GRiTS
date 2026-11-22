@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -531,7 +532,9 @@ def run(args):
                 stage('writing', order)
                 write_started = time.perf_counter()
                 if not was_committed:
-                    written = append_item_to_native_zarr(item=item, bands=ASSETS, zarr_path=store, chunk_size=512, compression=COMPRESSION, cache_dir=cache, read_mode='local_cache_first', lock_dir=state / 'locks', write_workers=write_workers)
+                    # This runner already verified each local COG against its frozen SHA-256.
+                    local_item = replace(item, assets={band: {**item.assets[band], 'href': str(scene_cache / f'{band}.tif')} for band in ASSETS})
+                    written = append_item_to_native_zarr(item=local_item, bands=ASSETS, zarr_path=store, chunk_size=512, compression=COMPRESSION, read_mode='remote_stream_first', lock_dir=state / 'locks', write_workers=write_workers)
                     require(written, 'New scene unexpectedly skipped by writer')
                 timings['write_seconds'] = time.perf_counter() - write_started
                 stage('verifying_catalog', order)

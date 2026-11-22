@@ -53,6 +53,7 @@ credentials*.json
 htmlcov/
 
 # Plans, test evidence and operational reports stay on the local machine.
+/docs/evidence/
 plan/
 plans/
 reports/

@@ -35,7 +35,10 @@ def run_pipeline(config_path, *, dry_run=False, max_new_scenes=None,
         else:
             from .workflow import run_scenes_workflow
             result = run_scenes_workflow(cfg["scene_job"])
-            if not result.get("audit_report", {}).get("ok", False):
+            if not result.get("audit_report", {}).get("ok", False) or any(
+                tile.get("status") in {"failed", "partial"}
+                for tile in result.get("results", {}).values()
+            ):
                 raise RuntimeError("SPECTRAL_FAILED: scene workflow audit did not pass; results retained")
             report["spectral"] = {"status": "COMPLETE", "result": result}
             report["status"] = "complete"

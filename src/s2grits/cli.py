@@ -88,6 +88,11 @@ def cmd_doctor(args) -> None:
 def cmd_process_scenes(args) -> None:
     result = run_scenes_workflow(args.config)
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    if not result.get("audit_report", {}).get("ok", False) or any(
+        tile.get("status") in {"failed", "partial"}
+        for tile in result.get("results", {}).values()
+    ):
+        raise SystemExit(1)
 
 
 def cmd_backfill_quality(args) -> None:
@@ -95,6 +100,12 @@ def cmd_backfill_quality(args) -> None:
     result = run_quality_backfill(args.config, dry_run=args.dry_run,
                                  max_new_scenes=args.max_new_scenes, tiles=args.tiles,
                                  max_new_scenes_per_tile=args.max_new_scenes_per_tile)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def cmd_rebind_quality(args) -> None:
+    from .quality_rebind import rebind_quality
+    result = rebind_quality(args.config, run_id=args.run_id, dry_run=args.dry_run)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -130,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
     quality.add_argument("--max-new-scenes-per-tile", type=int)
     quality.add_argument("--tiles", nargs="+", help="Process chronological prefixes of these frozen tiles")
     quality.set_defaults(func=cmd_backfill_quality)
+
+    rebind = sub.add_parser("rebind_quality", help="Publish a new SCL pairing without changing old quality records")
+    rebind.add_argument("--config", required=True)
+    rebind.add_argument("--run-id", required=True)
+    rebind.add_argument("--dry-run", action="store_true")
+    rebind.set_defaults(func=cmd_rebind_quality)
 
     pipeline = sub.add_parser("process_pipeline", help="Run spectral jobs or optional frozen SCL pairing")
     pipeline.add_argument("--config", required=True)

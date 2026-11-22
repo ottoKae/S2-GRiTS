@@ -33,3 +33,11 @@ runtime:
   request_timeout_seconds: 120
   min_free_output_gib: 20
   max_output_gib: 100
+
+# Optional for a NEW frozen quality task only; changing an old YAML breaks its binding.
+# metadata:
+#   provenance:
+#     enabled: true
+#     dataset_id: s2-quality-example
+#     run_id: scl-frozen-job-v1
+# See docs/PROVENANCE_PRODUCTION_ZH.md for explicit rebind_quality after spectral updates.

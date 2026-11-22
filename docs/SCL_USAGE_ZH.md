@@ -101,7 +101,7 @@ s2grits backfill_quality --config config/local/scl_companion.yaml --dry-run
 
 P2 已选择 4 个瓦片、各写最早 2 景。初次运行可用 `--max-new-scenes 8 --max-new-scenes-per-tile 2`；试点恢复必须按接受收据计算剩余配额，不能重复初次新增限额而扩大试点。运行环境必须符合 [版本锁](../config/quality_environment.lock.json)，不能将专用配置传给普通 `process_scenes`。
 
-新机器使用 Python **3.12.13**，在仓库根执行 `python -m pip install -r config/requirements-quality.txt -e ".[dev]"`，即可安装与锁文件一致的质量层依赖。配套 Resolver 使用 [README 的固定提交安装命令](../README.md)，不能用旧 `v0.1.0` 替代。2026-10-14 已验证公开文件构建的 wheel、全新环境测试和默认 HTTPS 下载；本地研究脚本不是安装依赖。冻结清单仍需按下表准备，不会由安装步骤自动生成。
+新机器使用 Python **3.12.13**，在仓库根执行 `python -m pip install -r config/requirements-quality.txt -e ".[dev]"`，即可安装与锁文件一致的质量层依赖。按 [README](../README.md) 将兼容的 Resolver 安装到同一环境，再执行 `python -B tests/run.py --integration`；不能用旧 `v0.1.0` 替代。2026-10-14 已验证公开文件构建的 wheel、全新环境测试和默认 HTTPS 下载；本地研究脚本不是安装依赖。冻结清单仍需按下表准备，不会由安装步骤自动生成。
 
 ### 配置准备、分批运行与恢复
 
@@ -135,7 +135,7 @@ s2grits backfill_quality --config config/local/scl_companion.yaml --max-new-scen
 
 **每景保存一张 SCL 类别图，最终为 `20m/scl(time, y, x)`。** 可以把它理解成每景附带一个质量 band；在本仓库的 Zarr 中，各 band 分别是命名数组，没有要求把它们拼成一个包含 `band` 维度的大数组。
 
-Ecuador 已采用独立配套 Zarr。原十光谱库位于 `S2-GRiTS_Ecuador_40tiles_201601_202606_optional`；质量库根目录为同级的 `S2-GRiTS_Ecuador_40tiles_201601_202606_quality_scl_v1`，两者位于 `D:/data/Ecuador_Datasets/`。质量库根另有 `catalog.parquet`、`quality_links.parquet`、`companion.json` 与任务验收记录。每个瓦片的结构沿用原生写入器：
+Ecuador 案例采用独立配套 Zarr。光谱库与质量库放在同一父目录下；具体路径由接收者配置，不依赖原生产机器的位置。质量库根另有 `catalog.parquet`、`quality_links.parquet`、`companion.json` 与任务验收记录。每个瓦片的结构沿用原生写入器：
 
 ```text
 <质量库根目录>/<MGRS瓦片>/scenes_L2A_native/zarr/

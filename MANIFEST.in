@@ -1,0 +1,25 @@
+include README.md README.zh-CN.md environment.yml
+include LICENSE LICENSE-COMMERCIAL.md
+include docs/*.md
+include config/ecuador_17mpu_native_2024.yaml config/ecuador_17mpu_native_test.yaml
+include config/jiangsu_s2_l2a_2025_scenes.yaml config/jiangsu_s2_l2a_native_20250101_20260730.yaml
+include config/jiangsu_yanduqu_s2_l2a_2025_scenes.yaml config/pilot_s2_l2a_native.yaml
+include config/pipeline_scl.example.yaml config/quality_companion.example.yaml
+include config/tessera10_scl_native.example.yaml config/provenance_native.example.yaml
+include config/quality_environment.lock.json config/requirements-quality.txt
+recursive-include tools *.py *.ps1 *.bat
+recursive-include tests *.py *.md *.kml
+prune docs/plans
+prune docs/reports
+prune docs/evidence
+prune config/local
+prune tests/local
+prune tests/reports
+prune tests/data
+prune tooling
+prune outputs
+prune data
+prune .test-tmp
+exclude config/*.local.yaml config/*.local.yml config/*.private.yaml config/*.private.yml
+exclude config/ecuador40_scl_companion.example.yaml
+global-exclude *.py[cod] *.log *.pem *.key .env .env.*

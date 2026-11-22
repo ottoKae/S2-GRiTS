@@ -60,6 +60,7 @@ def apply_defaults(cfg: dict[str, Any]) -> None:
     output.setdefault("logs_dir", "../logs")
     output.setdefault("cache_dir", "../_cache")
     output.setdefault("existing_store", "resume")
+    output.setdefault("existing_item", "skip")
     if output.get("zarr_compression") is None:
         output["zarr_compression"] = dict(DEFAULT_COMPRESSION)
     elif isinstance(output["zarr_compression"], dict):
@@ -182,6 +183,11 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
             "set output.formats.cog=false."
         )
 
+    from .provenance_production import validate_tracking_config
+    try:
+        validate_tracking_config(cfg)
+    except (ValueError, KeyError, TypeError) as exc:
+        errors.append(str(exc))
     return errors
 
 

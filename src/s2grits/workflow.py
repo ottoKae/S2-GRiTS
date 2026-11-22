@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 from pathlib import Path
@@ -24,6 +23,7 @@ from .monitor import (
     scene_declared_size,
     setup_logger,
 )
+from .scene_identity import scene_identity
 from .stac import S2Item, asset_summary_json, search_items
 from .zarr_writer import append_item_to_native_zarr
 
@@ -57,6 +57,7 @@ def _catalog_records(
     relative_zarr = relative_asset_path(zarr_path, output_root)
     relative_preview = relative_asset_path(preview_path, output_root)
     records = []
+    identity = scene_identity(item)
     for group_name, group_bands in band_groups.items():
         group = root[group_name]
         attrs = dict(group.attrs)
@@ -91,6 +92,8 @@ def _catalog_records(
                 "status": "complete",
                 "sensor": "sentinel-2",
                 "platform": item.platform,
+                "track": identity["relative_orbit"],
+                "flight_direction": identity["orbit_state"],
                 "source_collection": item.collection,
                 "provider": provider,
                 "stac_api": stac_api,
@@ -111,7 +114,7 @@ def _catalog_records(
     return records
 
 
-def run_scenes_workflow(config_path: str | Path) -> dict:
+def _run_scenes_workflow(config_path: str | Path) -> dict:
     run_started = time.perf_counter()
     cfg = load_config(config_path)
     errors = validate_config(cfg)
@@ -546,11 +549,11 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
             formats=formats,
         )
         failed_workflow_tiles = [
-            tile for tile, result in results.items() if result.get("status") == "failed"
+            tile for tile, result in results.items() if result.get("status") in {"failed", "partial"}
         ]
         if failed_workflow_tiles:
             audit_report["warnings"].append(
-                f"Workflow failed before complete inventory for tiles: {', '.join(failed_workflow_tiles)}"
+                f"Workflow failed or remained partial for tiles: {', '.join(failed_workflow_tiles)}"
             )
             audit_report["ok"] = False
         run_progress.set_final_stage(
@@ -576,3 +579,21 @@ def run_scenes_workflow(config_path: str | Path) -> dict:
         len(audit_report.get("warnings", [])),
     )
     return summary
+
+
+def run_scenes_workflow(config_path: str | Path) -> dict:
+    """Share the selected-archive lock across tracked and ordinary scene jobs."""
+    from .locking import InterProcessLock
+    from .provenance_production import assert_no_pending, run_tracked_scenes, validate_tracking_config
+    cfg = load_config(config_path)
+    errors = validate_config(cfg)
+    if errors:
+        raise ValueError("\n".join(errors))
+    tracked = validate_tracking_config(cfg)
+    root = output_path(cfg, "base_dir").resolve()
+    lock = root.parent / ("." + root.name + ".selected.lock")
+    with InterProcessLock(lock, timeout=0):
+        if tracked:
+            return run_tracked_scenes(cfg)
+        assert_no_pending(root)
+        return _run_scenes_workflow(config_path)

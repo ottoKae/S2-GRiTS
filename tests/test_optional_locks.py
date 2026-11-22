@@ -52,7 +52,7 @@ def test_wrappers_forward_arguments_and_release_optional_lock(
     else:
         lock_path = tmp_path / "locks" / "cache" / "scene_a" / "blue_x.lock"
         expected_args = ("https://example.invalid/blue.tif", tmp_path / "cache", "scene/a", "blue/x")
-        expected_kwargs = {}
+        expected_kwargs = {"collection": None, "asset": None}
         underlying_name = "_cache_asset_unlocked"
         result = tmp_path / "cached.tif"
 

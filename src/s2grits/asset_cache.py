@@ -84,7 +84,8 @@ def cache_scene_assets(
     workers = max(1, min(int(max_band_workers), len(bands)))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"s2-{item.tile_id}") as pool:
         futures = {
-            pool.submit(cache_asset, item.assets[band]["href"], cache_dir, item.id, band, lock_dir): band
+            pool.submit(cache_asset, item.assets[band]["href"], cache_dir, item.id, band, lock_dir,
+                        collection=item.collection, asset=item.assets[band]): band
             for band in bands
         }
         pending = set(futures)

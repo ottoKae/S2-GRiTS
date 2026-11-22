@@ -58,6 +58,10 @@ def job(tmp_path, monkeypatch):
 
 def test_archive_and_repeat_skips_without_http(job, monkeypatch):
     args, features, cfg, calls = job
+    from s2grits import zarr_writer
+    def no_second_cache(*args, **kwargs):
+        pytest.fail('Frozen source already verified; writer must read that local COG directly')
+    monkeypatch.setattr(zarr_writer, 'cache_asset', no_second_cache)
     first = runner.run(args)
     assert first['accepted_this_run'] == 2 and len(calls) == 20
     assert list(Path(cfg['cache_root']).iterdir()) == []

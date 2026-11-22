@@ -118,7 +118,11 @@ def scene_config(tmp_path):
     return p
 
 
-def test_scene_dispatch_and_failed_audit_stop(tmp_path, monkeypatch):
+@pytest.mark.parametrize('failure', [
+    {'audit_report': {'ok': False}},
+    {'audit_report': {'ok': True}, 'results': {'49QHE': {'status': 'partial'}}},
+])
+def test_scene_dispatch_and_failed_audit_stop(tmp_path, monkeypatch, failure):
     from s2grits import workflow
     scene = scene_config(tmp_path)
     path = parent(tmp_path, scene_job=scene.name)
@@ -126,7 +130,7 @@ def test_scene_dispatch_and_failed_audit_stop(tmp_path, monkeypatch):
     assert run_pipeline(path, dry_run=True)['spectral']['status'] == 'CONFIG_VALIDATED_NO_NETWORK'
     monkeypatch.setattr(workflow, 'run_scenes_workflow', lambda *a: {'audit_report': {'ok': True}})
     assert run_pipeline(path)['spectral']['status'] == 'COMPLETE'
-    monkeypatch.setattr(workflow, 'run_scenes_workflow', lambda *a: {'audit_report': {'ok': False}})
+    monkeypatch.setattr(workflow, 'run_scenes_workflow', lambda *a: failure)
     with pytest.raises(RuntimeError, match='SPECTRAL_FAILED'):
         run_pipeline(path)
 

@@ -1,0 +1,38 @@
+# Optional tracked native production. Copy to config/local and choose your paths.
+# A changed source/time selection or replacement requires a new run_id.
+workflow: scenes
+metadata:
+  provenance:
+    enabled: true
+    dataset_id: s2-native-example
+    run_id: append-202501-v1
+roi:
+  manual_mgrs_tiles: [17MPU]
+time:
+  years: [2025]
+  months: [1]
+source:
+  stac_api: https://earth-search.aws.element84.com/v1
+  collection: sentinel-2-c1-l2a
+  read_mode: local_cache_first
+assets:
+  resolution_mode: native_groups
+  resampling: none
+  bands: [blue, green, red, nir, rededge1, rededge2, rededge3, nir08, swir16, swir22]
+processing:
+  monthly: {enabled: false}
+  cloud_mask: {enabled: false}
+output:
+  base_dir: D:/data/S2-native-example
+  logs_dir: ../logs
+  cache_dir: ../_cache
+  existing_store: resume
+  existing_item: skip  # overwrite only for an explicit same-item replacement run
+  formats: {zarr: true, cog: false, preview: false, raw_assets: false}
+  zarr_compression: {cname: zstd, clevel: 5, shuffle: shuffle}
+runtime:
+  chunk_size: 512
+  read_retries: 4
+  download_scene_workers: 1
+  download_band_workers: 2
+  downloader: auto

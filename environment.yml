@@ -4,11 +4,11 @@ channels:
   - nodefaults
 
 dependencies:
-  # 与 S1-GRiTS 保持同一 CPython 小版本，避免 GDAL/rasterio ABI 漂移。
+  # Match the CPython minor version used by S1-GRiTS for GDAL/rasterio compatibility.
   - python=3.12
   - pip
 
-  # 地理空间与数组栈优先使用 conda-forge 二进制包。
+  # Prefer conda-forge binaries for the geospatial and array stack.
   - gdal
   - rasterio
   - pyproj
@@ -19,14 +19,14 @@ dependencies:
   - zarr>=3,<4
   - pyarrow
 
-  # 网络、配置与运行时工具。
+  # Networking, configuration and runtime utilities.
   - requests
   - urllib3
   - pyyaml
   - tqdm
   - rich
 
-  # 验证工具。
+  # Test tools.
   - pytest
 
-  # 创建环境后，从仓库根目录执行：python -m pip install -e .
+  # After creating the environment, run from the repository: python -m pip install -e .

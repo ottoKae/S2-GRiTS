@@ -46,7 +46,7 @@ def _store_warnings(
     if not zarr_path.exists():
         return ["Zarr store does not exist"]
     try:
-        root = zarr.open_group(str(zarr_path), mode="r")
+        root = zarr.open_group(str(zarr_path), mode="r", use_consolidated=False)
     except Exception as exc:
         return [f"Zarr store is unreadable: {exc}"]
     if "time" not in root:
@@ -55,12 +55,27 @@ def _store_warnings(
         warnings.append(
             f"root time length={root['time'].shape[0]} but committed={committed_count}"
         )
-    for group_name, bands in band_groups.items():
+    actual_groups = {name: group for name, group in root.groups()}
+    actual_contract = {
+        name: {variable for variable, array in group.arrays() if array.ndim == 3}
+        for name, group in actual_groups.items()
+    }
+    expected_contract = {name: {variable_name(band) for band in bands}
+                         for name, bands in band_groups.items()}
+    if actual_contract != expected_contract:
+        warnings.append("stored band/group contract differs from the requested configuration")
+    declared = root.attrs.get("band_groups")
+    if declared is not None and declared != band_groups:
+        warnings.append("recorded band/group contract differs from the requested configuration")
+    for group_name in sorted(set(band_groups) | set(actual_groups)):
         if group_name not in root:
             warnings.append(f"resolution group {group_name} is missing")
             continue
         group = root[group_name]
         actual_resolution = group.attrs.get("resolution_metres")
+        if group_name not in {"10m", "20m", "60m"}:
+            warnings.append(f"unexpected resolution group {group_name}")
+            continue
         if actual_resolution != resolution_metres(group_name):
             warnings.append(
                 f"{group_name} resolution attr={actual_resolution}, "
@@ -92,8 +107,7 @@ def _store_warnings(
                 f"{group_name}/time length={group['time'].shape[0]}, "
                 f"committed={committed_count}"
             )
-        for band in bands:
-            variable = variable_name(band)
+        for variable in sorted(expected_contract.get(group_name, set()) | actual_contract.get(group_name, set())):
             if variable not in group:
                 warnings.append(f"{group_name}/{variable} is missing")
                 continue
